@@ -1,0 +1,30 @@
+* =trie.py/Node.get_suffxies= bug
+
+#+begin_src python :results output code :exports both
+  from trie import Trie
+  trie = Trie()
+  words = ['hell', 'hey', 'heman', 'hitman', 'hola', 'why', 'bite']
+  for w in words: trie.add(w)
+
+  print('this should print words that startswith =he=')
+  print(trie.root.get_suffixes('he'))
+
+  print('this should not print anything')
+  print(trie.root.get_suffixes('k'))
+#+end_src
+
+#+RESULTS:
+#+begin_src python
+this should print words that startswith =he=
+['hell', 'hey', 'heman']
+this should not print anything
+['ihell', 'ihey', 'iheman', 'ihitman', 'ihola', 'iwhy', 'ibite']
+#+end_src
+
+* modified TamilAlphabetNode to handle Tamil Strings
+
+modified Node and Trie so that any sequence object can be represented
+in Trie. Trie objects now get a argument =node_class= which is the
+class used to create node objects and each node object get a reference
+to the trie object so that when creating new nodes, =node_class= can
+be used instead of the base Node class

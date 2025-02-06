@@ -1,0 +1,67 @@
+#+auto_tangle:t
+
+
+* Tools
+** kiruvakkaruvigal - kkk
+#+begin_src shell
+  cd ~/code
+  git clone git@github.com:vanangamudi/kkk.git
+#+end_src
+* Log
+:PROPERTIES:
+:header-args: :results output
+:END:
+
+** Sort the words by suffix and save it for later
+#+begin_src shell
+  awk '{print $1}' words.clean.tsv | python suffix-sort.py > suffix-sorted.csv
+#+end_src
+** Cleave the =suffix-sorted.csv= for larger suffixes
+#+begin_src python :tangle /tmp/generate-suffixes.py
+  import arichuvadi as ari
+  from arichuvadi.uyirmei import split_uyirmei, merge_uyirmei
+  from collections import Counter
+  from tqdm import tqdm
+
+  WORD_LEN_LIMIT = 10
+  SUFFIX_SORTED_FILEPATH = '/home/vanangamudi/code/thodarudai/suffix-sorted.csv'
+  SUFFIX_LEN = 20
+
+  ERRORS_FILEPATH = '/tmp/errors.txt'
+  ERRORS_FILE = open(ERRORS_FILEPATH, 'w')
+
+  OUTPUT_FILEPATH = '/tmp/output.txt'
+  OUTPUT_FILE = open(OUTPUT_FILEPATH, 'w')
+
+  suffixes = set()
+  for line in tqdm(open(SUFFIX_SORTED_FILEPATH)):
+      line  = line.strip()
+      try:
+          letters = split_uyirmei(line, join_p=False)
+      except IndexError:
+          print(line, file=ERRORS_FILE)
+
+      if len(letters) > WORD_LEN_LIMIT:
+          continue
+      #print(line)
+      for i in range(1, SUFFIX_LEN + 1):
+          suffix = merge_uyirmei(letters[-i:])
+          #print(suffix)
+
+          suffixes.add(suffix)
+
+  counter = Counter(list(suffixes))
+  for suffix, count in sorted(
+          counter.items(),
+          #key=lambda x: str(reversed(x[0]))
+          #key=lambda x: -x[1]
+          key=lambda x: ''.join(reversed(split_uyirmei(x[0], join_p=False)))
+
+  ):
+      if count < 10:
+          continue
+      print(f'{suffix}\t{count}')#, file=OUTPUT_FILE)
+  print(len(counter))
+  ERRORS_FILE.close()
+  OUTPUT_FILE.close()
+#+end_src
