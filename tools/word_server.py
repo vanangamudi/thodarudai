@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 import os, sys, time, shlex, argparse, fcntl, re as stdre
 import socket, socketserver
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
 REQUIRED_BATCH_HDR = ("word","freq","glen","splits","status","notes")
 LEDGER_HDR = ("timestamp","batch","word","status","splits","notes")
 
+from urllib.parse import unquote
+
 def percent_decode(s):
-    return bytes(s.replace("+","%2B"), "utf-8").decode("utf-8") if "%" not in s else \
-           bytes(s, "utf-8").decode("utf-8")  # params we use don’t need general decoding
+    return unquote(s)
 
 def parse_params(line):
     toks = line.strip().split()
@@ -15,8 +18,8 @@ def parse_params(line):
     params = {}
     for t in toks[1:]:
         if "=" in t:
-            k,v = t.split("=",1)
-            params[k] = v
+            k, v = t.split("=", 1)
+            params[k] = percent_decode(v)
     return cmd, params
 
 class State:
@@ -73,6 +76,7 @@ class Handler(socketserver.StreamRequestHandler):
         line = self.rfile.readline().decode("utf-8")
         if not line:
             return
+        logging.info("Received raw command: %s", line.strip())
         cmd, params = parse_params(line)
         if cmd == "QUERY":
             self._handle_query(params)
@@ -112,27 +116,44 @@ class Handler(socketserver.StreamRequestHandler):
 
         out_rows = []
         seen = 0
-        for w,fr,gl in self.server.state.words_by_len:
+        candidates_logged = -100000000  # limit number of debug logs
+        for w, fr, gl in self.server.state.words_by_len:
             if gl < min_len:
+                # Since words are sorted descending by glen,
+                # all following words will be too short.
                 break
-            if prefix and not w.startswith(prefix): 
+            if prefix and not w.startswith(prefix):
+                if candidates_logged < 3:
+                    logging.debug("Skipping '%s': does not start with prefix '%s'", w, prefix)
+                    candidates_logged += 1
                 continue
             if suffix and not w.endswith(suffix):
+                if candidates_logged < 3:
+                    logging.debug("Skipping '%s': does not end with suffix '%s'", w, suffix)
+                    candidates_logged += 1
                 continue
             if exclude and (w in self.server.state.accepted):
+                if candidates_logged < 3:
+                    logging.debug("Skipping '%s': word is accepted", w)
+                    candidates_logged += 1
                 continue
             if rx and not rx.search(w):
+                if candidates_logged < 3:
+                    logging.debug("Skipping '%s': regex '%s' did not match", w, rx_pat)
+                    candidates_logged += 1
                 continue
             if seen >= offset:
-                out_rows.append((w,fr,gl))
+                logging.info("Adding '%s': ", w)
+                out_rows.append((w, fr, gl))
                 if len(out_rows) >= limit:
                     break
             seen += 1
 
+        logging.info("QUERY params: %s; returning %d words", p, len(out_rows))
         self._write_ok({"rows":len(out_rows)})
         self.wfile.write(("\t".join(REQUIRED_BATCH_HDR) + "\n").encode("utf-8"))
         for w,fr,gl in out_rows:
-            self.wfile.write(f"{w}\t{fr}\t{gl}\t\t{"todo"}\t\n".encode("utf-8"))
+            self.wfile.write(f"{w}\t{fr}\t{gl}\t\ttodo\t\n".encode("utf-8"))
 
     def _handle_commit(self, p):
         batch = p.get("batch","unnamed")
@@ -185,6 +206,7 @@ class Handler(socketserver.StreamRequestHandler):
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
+        logging.info("COMMIT batch=%s: committed %d rows; accepted_added=%d", batch, committed, accepted_added)
         self._write_ok({"committed":committed, "accepted_added":accepted_added})
 
     def _handle_reload(self, p):
@@ -192,6 +214,7 @@ class Handler(socketserver.StreamRequestHandler):
         if what not in ("ledger","wordlist","both"):
             self._write_err("bad_param","what must be ledger|wordlist|both"); return
         self.server.state.reload(what)
+        logging.info("RELOAD: %s", what)
         self._write_ok({"reloaded":what})
 
     def _handle_stats(self):
@@ -206,6 +229,7 @@ class Handler(socketserver.StreamRequestHandler):
             "wordlist_mtime": int(wl_m),
             "ledger_mtime": int(lg_m),
         }
+        logging.info("STATS: %s", kv)
         self._write_ok(kv)
 
 class UnixServer(socketserver.UnixStreamServer):

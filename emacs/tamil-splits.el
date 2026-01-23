@@ -1,6 +1,6 @@
 ;; -*- lexical-binding: t; -*-
 (defvar tamil-splits-socket
-  (expand-file-name "run/tamil_words.sock" (locate-dominating-file default-directory ".git"))
+  (expand-file-name "run/tamil-words.sock" (locate-dominating-file default-directory ".git"))
   "Path to the Unix domain socket exposed by the word server.")
 
 (defun tamil-splits--send (command &optional body-lines)
