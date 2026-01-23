@@ -4,8 +4,8 @@ import socket, socketserver
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
-REQUIRED_BATCH_HDR = ("word","freq","glen","splits","status","notes")
-LEDGER_HDR = ("timestamp","batch","word","status","splits","notes")
+REQUIRED_BATCH_HDR = ("id", "word", "freq", "glen", "splits", "status", "notes")
+LEDGER_HDR = ("timestamp", "batch", "id", "word", "status", "splits", "notes")
 
 from urllib.parse import unquote
 
@@ -22,15 +22,17 @@ def parse_params(line):
             params[k] = percent_decode(v)
     return cmd, params
 
+from tools.word_indexer import WordIndex
+
 class State:
     def __init__(self, wordlist_path, ledger_path):
         self.wordlist_path = wordlist_path
         self.ledger_path = ledger_path
-        self.words = []          # list of (word, freq, glen)
-        self.words_by_len = []   # sorted by (-glen, -freq, word)
+        self.word_index = WordIndex(wordlist_path)
+        self.words = self.word_index.words  # For backwards compatibility if needed.
+        self.words_by_len = self.words    # Already sorted.
         self.latest_status = {}  # word -> status
         self.accepted = set()
-        self._load_wordlist()
         self._load_ledger()
 
     def _load_wordlist(self):
@@ -114,40 +116,18 @@ class Handler(socketserver.StreamRequestHandler):
             except Exception as e:
                 self._write_err("bad_regex", str(e)); return
 
-        out_rows = []
-        seen = 0
-        candidates_logged = -100000000  # limit number of debug logs
-        for w, fr, gl in self.server.state.words_by_len:
-            if gl < min_len:
-                # Since words are sorted descending by glen,
-                # all following words will be too short.
-                break
-            if prefix and not w.startswith(prefix):
-                if candidates_logged < 3:
-                    logging.debug("Skipping '%s': does not start with prefix '%s'", w, prefix)
-                    candidates_logged += 1
-                continue
-            if suffix and not w.endswith(suffix):
-                if candidates_logged < 3:
-                    logging.debug("Skipping '%s': does not end with suffix '%s'", w, suffix)
-                    candidates_logged += 1
-                continue
-            if exclude and (w in self.server.state.accepted):
-                if candidates_logged < 3:
-                    logging.debug("Skipping '%s': word is accepted", w)
-                    candidates_logged += 1
-                continue
-            if rx and not rx.search(w):
-                if candidates_logged < 3:
-                    logging.debug("Skipping '%s': regex '%s' did not match", w, rx_pat)
-                    candidates_logged += 1
-                continue
-            if seen >= offset:
-                logging.info("Adding '%s': ", w)
-                out_rows.append((w, fr, gl))
-                if len(out_rows) >= limit:
-                    break
-            seen += 1
+        def exclude_fn(word):
+            return exclude and (word in self.server.state.accepted)
+        
+        out_rows = self.server.state.word_index.query_words(
+            prefix=prefix,
+            suffix=suffix,
+            min_len=min_len,
+            limit=limit,
+            offset=offset,
+            exclude_fn=exclude_fn,
+            regex=rx_pat
+        )
 
         logging.info("QUERY params: %s; returning %d words", p, len(out_rows))
         self._write_ok({"rows":len(out_rows)})
@@ -191,11 +171,14 @@ class Handler(socketserver.StreamRequestHandler):
                 for ln in lines[1:]:
                     if not ln.strip(): continue
                     c = ln.split("\t")
-                    w   = c[col["word"]].strip()
+                    # Use the 'id' from the TSV; if missing, default to the word.
+                    rec_id = c[col["id"]].strip() if col.get("id") is not None and len(c) > col["id"] else ""
+                    w    = c[col["word"]].strip()
                     status = (c[col["status"]].strip() or "todo")
                     splits = c[col["splits"]].strip()
-                    notes  = c[col["notes"]].strip() if len(c)>col["notes"] else ""
-                    f.write(f"{ts}\t{batch}\t{w}\t{status}\t{splits}\t{notes}\n")
+                    notes  = c[col["notes"]].strip() if len(c) > col["notes"] else ""
+                    # Write both id and word to ledger.
+                    f.write(f"{ts}\t{batch}\t{rec_id or w}\t{w}\t{status}\t{splits}\t{notes}\n")
                     committed += 1
                     # update latest status in memory
                     self.server.state.latest_status[w] = status
