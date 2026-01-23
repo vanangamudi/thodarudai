@@ -7,6 +7,7 @@ This module maps basic Latin characters (as on QWERTY keyboards) to Tamil script
 For example purposes only; the mapping should be extended to cover full phonetic needs.
 """
 
+import string
 # Transliteration mappings
 
 # Standalone vowels mapping (for when vowels appear with no preceding consonant)
@@ -63,6 +64,8 @@ CONSONANTS = {
     'dh': 'த',
     # ந் row (using the key for this row)
     'nh': 'ந',
+    # ப் row
+    'p': 'ப',
     # ம் row
     'm': 'ம',
     # ய் row
@@ -81,7 +84,7 @@ CONSONANTS = {
     # ற் row
     'rh': 'ற',
     # ன் row
-    'n': 'ன்',
+    'n': 'ன',
     # ஜ் row
     'j': 'ஜ',
     # ஸ் row
@@ -98,6 +101,11 @@ CONSONANTS = {
     'Z': 'ஶ',
 }
 
+PULLI = "்"  # used to suppress the inherent vowel (for pure consonants)
+# Prepare sorted tokens (longer strings first) for greedy matching.
+VOWEL_TOKENS = sorted(PHONETIC_VOWELS.keys(), key=len, reverse=True)
+CONSONANT_TOKENS = sorted(CONSONANTS.keys(), key=len, reverse=True)
+
 def transliterate(text):
     """
     Transliterates romanized input using a scheme modeled on the Emacs Tamil ITRANS
@@ -105,10 +113,6 @@ def transliterate(text):
     dictionaries) and attaches vowel diacritics to a pending consonant. If no vowel
     follows a consonant (i.e. at the end), a pulli is appended.
     """
-    pulli = "்"  # used to suppress the inherent vowel (for pure consonants)
-    # Prepare sorted tokens (longer strings first) for greedy matching.
-    vowel_tokens = sorted(PHONETIC_VOWELS.keys(), key=len, reverse=True)
-    consonant_tokens = sorted(CONSONANTS.keys(), key=len, reverse=True)
 
     output = []
     pending = None  # holds a pending consonant letter (plain form from CONSONANTS)
@@ -116,14 +120,12 @@ def transliterate(text):
     while i < len(text):
         # First try to match a vowel token.
         matched_token = None
-        for vt in vowel_tokens:
+        for vt in VOWEL_TOKENS:
             if text[i:i+len(vt)].lower() == vt:
                 matched_token = vt
                 break
         if matched_token is not None:
             if pending is not None:
-                # If the vowel is 'a' (inherent) then do not add a diacritic;
-                # otherwise attach the diacritic corresponding to the matched vowel.
                 output.append(pending + VOWEL_DIACRITICS[matched_token])
                 pending = None
             else:
@@ -131,27 +133,37 @@ def transliterate(text):
             i += len(matched_token)
             continue
 
-        # Next try to match a consonant token.
         matched_token = None
-        for ct in consonant_tokens:
+        for ct in CONSONANT_TOKENS:
             if text[i:i+len(ct)].lower() == ct.lower():
                 matched_token = ct
                 break
         if matched_token is not None:
             if pending is not None:
-                output.append(pending + pulli)
+                output.append(pending + PULLI)
             pending = CONSONANTS[matched_token]
             i += len(matched_token)
             continue
 
-        if pending is not None:
-            output.append(pending)
-            pending = None
-        output.append(text[i])
-        i += 1
+        # If current character is whitespace or punctuation:
+        if text[i] in string.whitespace or text[i] in string.punctuation:
+            if pending is not None:
+                # flush pending with pulli since a boundary is reached.
+                output.append(pending + PULLI)
+                pending = None
+            output.append(text[i])
+            i += 1
+            continue
+        else:
+            # flush pending as a pure consonant (without pulli) and output the character.
+            if pending is not None:
+                output.append(pending)
+                pending = None
+            output.append(text[i])
+            i += 1
 
     if pending is not None:
-        output.append(pending + pulli)
+        output.append(pending)
 
     return ''.join(output)
 

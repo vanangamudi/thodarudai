@@ -9,61 +9,153 @@ from PyQt5.QtCore import Qt
 from tools.tamil_phonetic import transliterate
 from urllib.parse import quote  # for percent encoding parameters
 
+import string
+from PyQt5.QtWidgets import QLineEdit
+from PyQt5.QtCore import Qt
+from tools.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
+
 class PhoneticLineEdit(QLineEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.raw_text = ""  # store the raw input
-        self.textChanged.connect(self.on_text_changed)
+        # Holds the committed text (already converted Tamil characters)
+        self.committed = ""
+        # Holds the composition in progress as a roman sequence
+        self.composition = ""
+
+    def is_possible_prefix(self, candidate):
+        """
+        Return True if candidate (a roman string) is either:
+          - exactly a token in PHONETIC_VOWELS or CONSONANTS,
+          - a prefix of any token in PHONETIC_VOWELS or CONSONANTS,
+        OR, if candidate can be split as (consonant + vowel_prefix) where:
+          - the consonant part is a valid consonant token, and
+          - the vowel_prefix part is a prefix of any vowel token in PHONETIC_VOWELS.
+        """
+        candidate = candidate.lower()
+        tokens = list(PHONETIC_VOWELS.keys()) + list(CONSONANTS.keys())
+        # First, check if candidate is exactly a token or is a prefix.
+        if any(token == candidate or token.startswith(candidate) for token in tokens):
+            return True
+        # Next, check for the composite case:
+        if len(candidate) >= 2:
+            # Try to split candidate into a consonant part and vowel part.
+            # We iterate over possible splits; usually the consonant token is one or two letters.
+            for i in range(1, len(candidate)):
+                cons_part = candidate[:i]
+                vowel_part = candidate[i:]
+                # Check if cons_part is exactly a valid consonant token.
+                if cons_part in CONSONANTS:
+                    # Check if the vowel_part is a prefix of some vowel token.
+                    if any(vowel.startswith(vowel_part) for vowel in PHONETIC_VOWELS.keys()):
+                        return True
+        return False
+
+    def commit_composition(self):
+        """
+        Commit the current composition: convert it to Tamil and append it to committed.
+        In our interactive model, if the composition appears incomplete (i.e. ends with a consonant),
+        force the addition of a pulli.
+        Then clear the composition.
+        """
+        if self.composition:
+            # Get the interactive transliteration.
+            result = transliterate(self.composition)
+            # Determine if the composition is incomplete.
+            # (If the roman composition does not end with any vowel token, assume it is incomplete.)
+            incomplete = True
+            for vt in PHONETIC_VOWELS.keys():
+                if self.composition.lower().endswith(vt):
+                    incomplete = False
+                    break
+            # If incomplete and result does not already end with a pulli, force a pulli.
+            if incomplete and not result.endswith("்"):
+                result += "்"
+            self.committed += result
+            self.composition = ""
+
+    def update_display(self):
+        """
+        Update the QLineEdit display with the transliteration of (committed + composition).
+        In our desired behavior, every consonant is rendered with a pulli by default unless
+        a vowel has been typed. So if the current composition is nonempty and does not end with
+        any vowel (as defined in PHONETIC_VOWELS), we force-add a pulli ("்") to the displayed text.
+        """
+        # Get the interactive transliteration of our current (raw) composition.
+        current_disp = transliterate(self.composition)
+        # Check if the current composition is nonempty and does NOT end with a vowel token.
+        incomplete = False
+        if self.composition:
+            # Look for any vowel token that could appear at the end.
+            if not any(self.composition.lower().endswith(vt) for vt in PHONETIC_VOWELS.keys()):
+                incomplete = True
+        # If incomplete, ensure that current_disp ends with a pulli.
+        if incomplete and self.composition:
+            if not current_disp.endswith("்"):
+                current_disp += "்"
+        # The final display is the concatenation of committed (already fixed) plus
+        # the current composition (which may have been adjusted to show pulli).
+        disp = self.committed + current_disp
+        self.setText(disp)
+        self.setCursorPosition(len(disp))
 
     def keyPressEvent(self, event):
-        pos = self.cursorPosition()
         key = event.key()
-        if key in (Qt.Key_Backspace, Qt.Key_Delete):
-            if key == Qt.Key_Backspace and pos > 0:
-                self.raw_text = self.raw_text[:pos-1] + self.raw_text[pos:]
-                pos -= 1
-            elif key == Qt.Key_Delete and pos < len(self.raw_text):
-                self.raw_text = self.raw_text[:pos] + self.raw_text[pos+1:]
-            self._updateDisplay(pos)
-            event.accept()
-            return
-        elif key in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down,
-                     Qt.Key_Home, Qt.Key_End, Qt.Key_Tab, Qt.Key_Return, Qt.Key_Enter):
-            super().keyPressEvent(event)
-            return
         ch = event.text()
-        if ch:
-            self.raw_text = self.raw_text[:pos] + ch + self.raw_text[pos:]
-            pos += len(ch)
-            self._updateDisplay(pos)
+
+        # Handle Backspace:
+        if key == Qt.Key_Backspace:
+            # Prefer to remove from the composition if available
+            if self.composition:
+                self.composition = self.composition[:-1]
+            else:
+                # If composition is empty, remove the last committed syllable.
+                self.committed = self.committed[:-1]
+            self.update_display()
             event.accept()
             return
-        else:
-            super().keyPressEvent(event)
 
-    def inputMethodEvent(self, event):
-        committed = event.commitString()
-        if committed:
-            # Append the committed string at current cursor position.
-            pos = self.cursorPosition()
-            self.raw_text = self.raw_text[:pos] + committed + self.raw_text[pos:]
-            pos += len(committed)
-            self._updateDisplay(pos)
+        # Handle Delete similarly:
+        elif key == Qt.Key_Delete:
+            # For simplicity, clear the composition if any; else remove one char from committed.
+            if self.composition:
+                self.composition = ""
+            else:
+                self.committed = self.committed[:-1]
+            self.update_display()
             event.accept()
+            return
+
+        # For boundary keys (space, punctuation), commit the composition first.
+        elif ch and (ch in string.whitespace or ch in string.punctuation):
+            self.commit_composition()
+            self.committed += ch  # add the boundary as is
+            self.update_display()
+            event.accept()
+            return
+
+        # For alphanumeric keys (i.e. input characters for syllable formation)
+        elif ch and ch.isalnum():
+            candidate = self.composition + ch
+            if self.is_possible_prefix(candidate):
+                # Accept the character into composition.
+                self.composition = candidate
+            else:
+                # The candidate is not a valid prefix.
+                # Commit the current composition and start a new one.
+                self.commit_composition()
+                # If the incoming character is itself a valid starting sequence, add it.
+                # Otherwise, simply add it to committed.
+                if self.is_possible_prefix(ch):
+                    self.composition = ch
+                else:
+                    self.committed += ch
+            self.update_display()
+            event.accept()
+            return
+
         else:
-            super().inputMethodEvent(event)
-
-    def _updateDisplay(self, new_cursor_pos):
-        window = self.window()
-        use_phonetic = hasattr(window, 'phonetic_cb') and window.phonetic_cb.isChecked()
-        new_text = transliterate(self.raw_text) if use_phonetic else self.raw_text
-        self.setText(new_text)
-        self.setCursorPosition(len(new_text))
-
-    def on_text_changed(self, new_text):
-        # Fallback: if the visible text doesn't match transliteration of our stored raw_text, update raw_text.
-        if new_text != transliterate(self.raw_text):
-            self.raw_text = new_text
+            # For non-character keys (arrow, home, etc.), pass to default.
+            super().keyPressEvent(event)
 
 class MainWindow(QMainWindow):
     def __init__(self, socket_path="run/tamil-words.sock"):
@@ -89,7 +181,7 @@ class MainWindow(QMainWindow):
         # NEW: add a checkbox for phonetic input mode.
         self.phonetic_cb = QCheckBox("Phonetic Input")
         # Connect textEdited signals for realtime transliteration when phonetic mode is on.
-        
+
         # Also, when the phonetic checkbox is toggled, update the fields immediately.
         self.phonetic_cb.toggled.connect(self.refresh_phonetic_fields)
         query_btn = QPushButton("Query")
@@ -120,20 +212,22 @@ class MainWindow(QMainWindow):
         query_btn.clicked.connect(self.query_server)
 
     def query_server(self):
-        # Get the raw input from the fields.
+        # Get the current text; note that our PhoneticLineEdit already displays transliterated text.
+        # So, if phonetic mode is enabled, we use the text as shown, otherwise, we may transliterate.
         raw_prefix = self.prefix_edit.text()
         raw_suffix = self.suffix_edit.text()
         raw_regex = self.regex_edit.text()
 
-        # If the Phonetic Input checkbox is enabled, transliterate the input.
         if self.phonetic_cb.isChecked():
-            prefix_text = transliterate(raw_prefix)
-            suffix_text = transliterate(raw_suffix)
-            regex_text = transliterate(raw_regex) if raw_regex else ""
-        else:
+            # Phonetic mode enabled: the fields already show Tamil.
             prefix_text = raw_prefix
             suffix_text = raw_suffix
             regex_text = raw_regex
+        else:
+            # Otherwise, assume user entered roman text and perform transliteration.
+            prefix_text = transliterate(raw_prefix)
+            suffix_text = transliterate(raw_suffix)
+            regex_text = transliterate(raw_regex) if raw_regex else ""
 
         # Percent-encode the (possibly) transliterated text.
         prefix = quote(prefix_text)
@@ -184,7 +278,7 @@ class MainWindow(QMainWindow):
 
     def refresh_phonetic_fields(self):
         for field in (self.prefix_edit, self.suffix_edit, self.regex_edit):
-            field._updateDisplay(len(field.raw_text))
+            field.update_display()
 
     def populate_table(self, data_lines):
         self.table.setRowCount(0)
