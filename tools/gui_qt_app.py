@@ -19,6 +19,8 @@ from urllib.parse import quote  # for percent encoding parameters
 from tools.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
 from tools.word_indexer import WordIndex
 
+BATCHES_DIR = "data/batches"
+
 class PhoneticLineEdit(QLineEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -26,7 +28,7 @@ class PhoneticLineEdit(QLineEdit):
         self.committed = ""
         # Holds the composition in progress as a roman sequence
         self.composition = ""
-    
+
     def setUndoRedoEnabled(self, enabled):
         """
         Delegate to the base QLineEdit's setUndoRedoEnabled if available.
@@ -177,7 +179,7 @@ class MainWindow(QMainWindow):
         self.socket_path = socket_path
         self.mode = mode  # mode: either "server" or "local"
         if self.mode == "local":
-            self.batch_dir = "batches"
+            self.batch_dir = BATCHES_DIR
             import os
             os.makedirs(self.batch_dir, exist_ok=True)
         self.wordlist_path = "data/word-index.tsv"
@@ -429,7 +431,66 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 3, QTableWidgetItem(str(glen)))
             self.table.setItem(row, 4, QTableWidgetItem("todo"))  # status
             self.table.setItem(row, 5, QTableWidgetItem(""))       # notes
-        self.table.resizeColumnsToContents()
+        self.table.resizeColumnsToContents()main_layout.addWidget(self.table)
+
+        # Allow custom context menu on the table.
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_table_context_menu)
+        self.table.cellClicked.connect(self.prefill_find_field)
+        # Add shortcut to toggle ignore status for selected rows.
+        ignore_action = QAction("Toggle Ignore", self)
+        ignore_action.setShortcut("I")
+        ignore_action.triggered.connect(self.toggle_ignore_for_selected)
+        self.addAction(ignore_action)
+
+        # (Query button connected earlier in the params panel.)
+        from PyQt5.QtGui import QKeySequence
+        from PyQt5.QtWidgets import QShortcut, QInputDialog
+        commit_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
+        commit_shortcut.activated.connect(self.commit_edits)
+
+    def query_words(self):
+        # Get values from UI fields.
+        prefix = self.prefix_edit.text().strip()
+        suffix = self.suffix_edit.text().strip()
+        regex = self.regex_edit.text().strip()
+        min_len = self.min_len_spin.value()
+        limit = self.limit_spin.value()
+        exclude = self.exclude_cb.isChecked()  # boolean
+
+        def exclude_fn(word):
+            return exclude and (word in self.accepted_words())
+
+        results = self.word_index.query_words(
+            prefix=prefix,
+            suffix=suffix,
+            min_len=min_len,
+            limit=limit,
+            offset=0,
+            exclude_fn=exclude_fn,
+            regex=regex
+        )
+        self.populate_table_from_results(results)
+
+     def populate_table_from_results(self, results):
+        self.table.setRowCount(0)
+        for rec in results:
+            # For local word index, we assume rec has 3 elements; default id is the word.
+            if len(rec) == 3:
+                split_text, freq, glen = rec
+                rec_id = split_text
+            elif len(rec) >= 4:
+                rec_id, split_text, freq, glen = rec[:4]
+            else:
+                continue
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(rec_id))
+            self.table.setItem(row, 1, QTableWidgetItem(split_text))
+            self.table.setItem(row, 2, QTableWidgetItem(str(freq)))
+            self.table.setItem(row, 3, QTableWidgetItem(str(glen)))
+            self.table.setItem(row, 4, QTableWidgetItem("todo"))  # status
+            self.table.setItem(row, 5, QTableWidgetItem(""))       # notes
 
     def refresh_phonetic_fields(self):
         for field in (self.prefix_edit, self.suffix_edit, self.regex_edit):
