@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 import sys, socket
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -58,7 +60,8 @@ class PhoneticLineEdit(QLineEdit):
         Then clear the composition.
         """
         if self.composition:
-            # Get the interactive transliteration.
+            # Log the raw composition before committing.
+            logging.debug("Committing composition: '%s'", self.composition)
             result = transliterate(self.composition)
             # Determine if the composition is incomplete.
             # (If the roman composition does not end with any vowel token, assume it is incomplete.)
@@ -70,7 +73,9 @@ class PhoneticLineEdit(QLineEdit):
             # If incomplete and result does not already end with a pulli, force a pulli.
             if incomplete and not result.endswith("்"):
                 result += "்"
+                logging.debug("Forced pulli, result becomes: '%s'", result)
             self.committed += result
+            logging.debug("Committed text updated: '%s'", self.committed)
             self.composition = ""
 
     def update_display(self):
@@ -97,64 +102,60 @@ class PhoneticLineEdit(QLineEdit):
         disp = self.committed + current_disp
         self.setText(disp)
         self.setCursorPosition(len(disp))
+        logging.debug("Display updated: '%s' (committed: '%s', composition: '%s')",
+                      disp, self.committed, self.composition)
 
     def keyPressEvent(self, event):
         key = event.key()
         ch = event.text()
+        logging.debug("Key press: key=%s, text='%s', current composition='%s', committed='%s'",
+                      key, ch, self.composition, self.committed)
 
-        # Handle Backspace:
         if key == Qt.Key_Backspace:
-            # Prefer to remove from the composition if available
             if self.composition:
                 self.composition = self.composition[:-1]
+                logging.debug("Backspace: New composition='%s'", self.composition)
             else:
-                # If composition is empty, remove the last committed syllable.
                 self.committed = self.committed[:-1]
+                logging.debug("Backspace: Removed last char from committed, new committed='%s'", self.committed)
             self.update_display()
             event.accept()
             return
-
-        # Handle Delete similarly:
         elif key == Qt.Key_Delete:
-            # For simplicity, clear the composition if any; else remove one char from committed.
             if self.composition:
                 self.composition = ""
+                logging.debug("Delete: Cleared composition")
             else:
                 self.committed = self.committed[:-1]
+                logging.debug("Delete: Removed last char from committed, new committed='%s'", self.committed)
             self.update_display()
             event.accept()
             return
-
-        # For boundary keys (space, punctuation), commit the composition first.
         elif ch and (ch in string.whitespace or ch in string.punctuation):
+            logging.debug("Boundary key pressed: '%s'", ch)
             self.commit_composition()
-            self.committed += ch  # add the boundary as is
+            self.committed += ch
             self.update_display()
             event.accept()
             return
-
-        # For alphanumeric keys (i.e. input characters for syllable formation)
         elif ch and ch.isalnum():
             candidate = self.composition + ch
             if self.is_possible_prefix(candidate):
-                # Accept the character into composition.
                 self.composition = candidate
+                logging.debug("Accepted key, new composition='%s'", self.composition)
             else:
-                # The candidate is not a valid prefix.
-                # Commit the current composition and start a new one.
+                logging.debug("Candidate '%s' not possible, committing current composition", candidate)
                 self.commit_composition()
-                # If the incoming character is itself a valid starting sequence, add it.
-                # Otherwise, simply add it to committed.
                 if self.is_possible_prefix(ch):
                     self.composition = ch
+                    logging.debug("Starting new composition with '%s'", ch)
                 else:
                     self.committed += ch
+                    logging.debug("Appending '%s' to committed", ch)
             self.update_display()
             event.accept()
             return
-
         else:
-            # For non-character keys (arrow, home, etc.), pass to default.
             super().keyPressEvent(event)
 
 class MainWindow(QMainWindow):
@@ -180,6 +181,7 @@ class MainWindow(QMainWindow):
         self.exclude_cb = QCheckBox("Exclude accepted")
         # NEW: add a checkbox for phonetic input mode.
         self.phonetic_cb = QCheckBox("Phonetic Input")
+        self.phonetic_cb.setChecked(True)
         # Connect textEdited signals for realtime transliteration when phonetic mode is on.
 
         # Also, when the phonetic checkbox is toggled, update the fields immediately.
