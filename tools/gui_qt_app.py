@@ -26,6 +26,16 @@ class PhoneticLineEdit(QLineEdit):
         self.committed = ""
         # Holds the composition in progress as a roman sequence
         self.composition = ""
+    
+    def setUndoRedoEnabled(self, enabled):
+        """
+        Delegate to the base QLineEdit's setUndoRedoEnabled if available.
+        If not, do nothing.
+        """
+        try:
+            super().setUndoRedoEnabled(enabled)
+        except AttributeError:
+            pass
 
     def is_possible_prefix(self, candidate):
         """
@@ -186,11 +196,13 @@ class MainWindow(QMainWindow):
         # Row for prefix:
         prefix_suffix_row = QHBoxLayout()
         self.prefix_edit = PhoneticLineEdit(self)
+        self.prefix_edit.setUndoRedoEnabled(True)
         prefix_suffix_row.addWidget(QLabel("Prefix:"))
         prefix_suffix_row.addWidget(self.prefix_edit)
         prefix_suffix_panel.addLayout(prefix_suffix_row)
         # Row for suffix:
         self.suffix_edit = PhoneticLineEdit(self)
+        self.suffix_edit.setUndoRedoEnabled(True)
         prefix_suffix_row.addWidget(QLabel("Suffix:"))
         prefix_suffix_row.addWidget(self.suffix_edit)
         prefix_suffix_panel.addLayout(prefix_suffix_row)
@@ -198,6 +210,7 @@ class MainWindow(QMainWindow):
 
         self.regex_edit = PhoneticLineEdit(self)
         self.regex_edit.setPlaceholderText("Regex (optional)")
+        self.regex_edit.setUndoRedoEnabled(True)
         prefix_suffix_row.addWidget(QLabel("Regex:"))
         prefix_suffix_row.addWidget(self.regex_edit)
 
@@ -231,10 +244,12 @@ class MainWindow(QMainWindow):
         # Find/Replace Panel (moved to the very top)
         ###############################
         find_layout = QHBoxLayout()
-        self.find_edit = QLineEdit()
+        self.find_edit = PhoneticLineEdit(self)
         self.find_edit.setPlaceholderText("Find")
-        self.replace_edit = QLineEdit()
+        self.find_edit.setUndoRedoEnabled(True)
+        self.replace_edit = PhoneticLineEdit(self)
         self.replace_edit.setPlaceholderText("Replace")
+        self.replace_edit.setUndoRedoEnabled(True)
         self.apply_replace_btn = QPushButton("Apply Replace")
         self.apply_replace_btn.clicked.connect(self.apply_replace_to_cell)
         find_layout.addWidget(QLabel("Find:"))
@@ -251,6 +266,8 @@ class MainWindow(QMainWindow):
         self.table.setHorizontalHeaderLabels(["id", "split", "freq", "glen", "status", "notes"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(self.table.DoubleClicked | self.table.SelectedClicked | self.table.EditKeyPressed)
+        from PyQt5.QtWidgets import QHeaderView
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         main_layout.addWidget(self.table)
 
         # Allow custom context menu on the table.
@@ -268,6 +285,15 @@ class MainWindow(QMainWindow):
         from PyQt5.QtWidgets import QShortcut, QInputDialog
         commit_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
         commit_shortcut.activated.connect(self.commit_edits)
+        # Focus Shortcuts
+        QShortcut(QKeySequence("Alt+P"), self, activated=lambda: self.prefix_edit.setFocus())
+        QShortcut(QKeySequence("Alt+S"), self, activated=lambda: self.suffix_edit.setFocus())
+        QShortcut(QKeySequence("Alt+R"), self, activated=lambda: self.regex_edit.setFocus())
+        QShortcut(QKeySequence("Alt+F"), self, activated=lambda: self.find_edit.setFocus())
+        QShortcut(QKeySequence("Alt+L"), self, activated=lambda: self.replace_edit.setFocus())
+        QShortcut(QKeySequence("Alt+M"), self, activated=lambda: self.min_len_spin.setFocus())
+        QShortcut(QKeySequence("Alt+I"), self, activated=lambda: self.limit_spin.setFocus())
+        QShortcut(QKeySequence("Alt+Q"), self, activated=lambda: self.query_btn.setFocus())
 
     def query_words(self):
         # Get values from UI fields.
@@ -403,6 +429,7 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 3, QTableWidgetItem(str(glen)))
             self.table.setItem(row, 4, QTableWidgetItem("todo"))  # status
             self.table.setItem(row, 5, QTableWidgetItem(""))       # notes
+        self.table.resizeColumnsToContents()
 
     def refresh_phonetic_fields(self):
         for field in (self.prefix_edit, self.suffix_edit, self.regex_edit):
