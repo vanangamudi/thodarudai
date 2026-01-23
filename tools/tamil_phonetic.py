@@ -135,9 +135,17 @@ def transliterate(text):
 
         matched_token = None
         for ct in CONSONANT_TOKENS:
-            if text[i:i+len(ct)].lower() == ct.lower():
+            candidate = text[i:i+len(ct)]
+            # First check for an exact match.
+            if candidate == ct:
                 matched_token = ct
                 break
+            # Otherwise, if the lower-case forms match, then only accept this candidate
+            # if the candidate’s first character is lowercase and the token’s first character is also lowercase.
+            elif candidate.lower() == ct.lower():
+                if candidate and ct and candidate[0].islower() and ct[0].islower():
+                    matched_token = ct
+                    break
         if matched_token is not None:
             if pending is not None:
                 output.append(pending + PULLI)
