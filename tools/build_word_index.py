@@ -19,14 +19,13 @@ def main(paths):
                 if i == 0 and line.startswith("word"):
                     continue
                 cols = line.strip().split("\t")
-                if len(cols) < 2:
-                    continue
                 word = cols[0]
                 try:
                     fr = int(cols[1])
-                except ValueError:
-                    continue
+                except:
+                    fr = 1
                 cnt[word] += fr
+
     out = sys.stdout
     print("word\tfreq\tglen", file=out)
     for w, n in cnt.items():

@@ -16,6 +16,7 @@ class WordIndex:
 
     def _load_wordlist(self):
         words = []
+        print('loading word list...')
         with open(self.wordlist_path, "r", encoding="utf-8") as f:
             # Read the header line which we assume is "word\tfreq\tglen"
             header = f.readline().strip().split("\t")
@@ -34,6 +35,7 @@ class WordIndex:
         self.words = words
         # Sort in descending order by glen, then freq, then ascending word.
         self.words.sort(key=lambda x: (-x[2], -x[1], x[0]))
+        print('loading word list... DONE')
 
     def query_words(self, prefix="", suffix="", min_len=1, limit=200, offset=0, exclude_fn=None, regex=""):
         """

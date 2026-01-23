@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import QLineEdit
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QLabel, QPushButton, QSpinBox, QCheckBox, QTableWidget,
-    QTableWidgetItem, QMenu, QAction, QMessageBox, QAbstractItemView, QInputDialog
+    QTableWidgetItem, QMenu, QAction, QMessageBox, QAbstractItemView, QInputDialog, QShortcut as MyShortcut
 )
 
 from urllib.parse import quote  # for percent encoding parameters
@@ -20,7 +20,8 @@ from tools.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
 from tools.word_indexer import WordIndex
 
 BATCHES_DIR = "data/batches"
-
+LEDGER_PATH = "data/splits-ledger.tsv"
+WORDLIST_PATH = "data/word-index.tsv"
 class PhoneticLineEdit(QLineEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -182,7 +183,7 @@ class MainWindow(QMainWindow):
             self.batch_dir = BATCHES_DIR
             import os
             os.makedirs(self.batch_dir, exist_ok=True)
-        self.wordlist_path = "data/word-index.tsv"
+        self.wordlist_path = WORDLIST_PATH
         self.word_index = WordIndex(self.wordlist_path)
         self.setWindowTitle("Tamil Splits - Qt Client")
         central = QWidget()
@@ -192,29 +193,36 @@ class MainWindow(QMainWindow):
 
 
         ###############################
-        # New Panel: Prefix and Suffix panels (split into two rows)
+        # New Panel: Prefix, Suffix, and Regex panels (in separate rows)
         ###############################
         prefix_suffix_panel = QVBoxLayout()
+
         # Row for prefix:
-        prefix_suffix_row = QHBoxLayout()
+        prefix_row = QHBoxLayout()
         self.prefix_edit = PhoneticLineEdit(self)
         self.prefix_edit.setUndoRedoEnabled(True)
-        prefix_suffix_row.addWidget(QLabel("Prefix:"))
-        prefix_suffix_row.addWidget(self.prefix_edit)
-        prefix_suffix_panel.addLayout(prefix_suffix_row)
+        prefix_row.addWidget(QLabel("Prefix:"))
+        prefix_row.addWidget(self.prefix_edit)
+        prefix_suffix_panel.addLayout(prefix_row)
+
         # Row for suffix:
+        suffix_row = QHBoxLayout()
         self.suffix_edit = PhoneticLineEdit(self)
         self.suffix_edit.setUndoRedoEnabled(True)
-        prefix_suffix_row.addWidget(QLabel("Suffix:"))
-        prefix_suffix_row.addWidget(self.suffix_edit)
-        prefix_suffix_panel.addLayout(prefix_suffix_row)
-        main_layout.addLayout(prefix_suffix_panel)
+        suffix_row.addWidget(QLabel("Suffix:"))
+        suffix_row.addWidget(self.suffix_edit)
+        prefix_suffix_panel.addLayout(suffix_row)
 
+        # Row for regex:
+        regex_row = QHBoxLayout()
         self.regex_edit = PhoneticLineEdit(self)
         self.regex_edit.setPlaceholderText("Regex (optional)")
         self.regex_edit.setUndoRedoEnabled(True)
-        prefix_suffix_row.addWidget(QLabel("Regex:"))
-        prefix_suffix_row.addWidget(self.regex_edit)
+        regex_row.addWidget(QLabel("Regex:"))
+        regex_row.addWidget(self.regex_edit)
+        prefix_suffix_panel.addLayout(regex_row)
+
+        main_layout.addLayout(prefix_suffix_panel)
 
 
         ###############################
@@ -262,6 +270,21 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(find_layout)
 
         ###############################
+        # Sort Panel: Sort by Prefix and Sort by Suffix
+        ###############################
+        sort_layout = QHBoxLayout()
+        sort_prefix_btn = QPushButton("Sort by Prefix")
+        sort_prefix_btn.clicked.connect(self.sort_table_by_prefix)
+        sort_suffix_btn = QPushButton("Sort by Suffix")
+        sort_suffix_btn.clicked.connect(self.sort_table_by_suffix)
+        sort_layout.addWidget(sort_prefix_btn)
+        sort_layout.addWidget(sort_suffix_btn)
+        main_layout.addLayout(sort_layout)
+        from PyQt5.QtGui import QKeySequence
+        MyShortcut(QKeySequence("Alt+P"), self, activated=self.sort_table_by_prefix)
+        MyShortcut(QKeySequence("Alt+S"), self, activated=self.sort_table_by_suffix)
+
+        ###############################
         # Table display (below the top panels)
         ###############################
         self.table = QTableWidget(0, 6)
@@ -284,18 +307,17 @@ class MainWindow(QMainWindow):
 
         # (Query button connected earlier in the params panel.)
         from PyQt5.QtGui import QKeySequence
-        from PyQt5.QtWidgets import QShortcut, QInputDialog
-        commit_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
-        commit_shortcut.activated.connect(self.commit_edits)
+        from PyQt5.QtWidgets import QInputDialog
+        commit_shortcut = MyShortcut(QKeySequence("Ctrl+S"), self, activated=self.commit_edits)
         # Focus Shortcuts
-        QShortcut(QKeySequence("Alt+P"), self, activated=lambda: self.prefix_edit.setFocus())
-        QShortcut(QKeySequence("Alt+S"), self, activated=lambda: self.suffix_edit.setFocus())
-        QShortcut(QKeySequence("Alt+R"), self, activated=lambda: self.regex_edit.setFocus())
-        QShortcut(QKeySequence("Alt+F"), self, activated=lambda: self.find_edit.setFocus())
-        QShortcut(QKeySequence("Alt+L"), self, activated=lambda: self.replace_edit.setFocus())
-        QShortcut(QKeySequence("Alt+M"), self, activated=lambda: self.min_len_spin.setFocus())
-        QShortcut(QKeySequence("Alt+I"), self, activated=lambda: self.limit_spin.setFocus())
-        QShortcut(QKeySequence("Alt+Q"), self, activated=lambda: self.query_btn.setFocus())
+        MyShortcut(QKeySequence("Alt+P"), self, activated=lambda: self.prefix_edit.setFocus())
+        MyShortcut(QKeySequence("Alt+S"), self, activated=lambda: self.suffix_edit.setFocus())
+        MyShortcut(QKeySequence("Alt+R"), self, activated=lambda: self.regex_edit.setFocus())
+        MyShortcut(QKeySequence("Alt+F"), self, activated=lambda: self.find_edit.setFocus())
+        MyShortcut(QKeySequence("Alt+L"), self, activated=lambda: self.replace_edit.setFocus())
+        MyShortcut(QKeySequence("Alt+M"), self, activated=lambda: self.min_len_spin.setFocus())
+        MyShortcut(QKeySequence("Alt+I"), self, activated=lambda: self.limit_spin.setFocus())
+        MyShortcut(QKeySequence("Alt+Q"), self, activated=lambda: self.query_btn.setFocus())
 
     def query_words(self):
         # Get values from UI fields.
@@ -345,7 +367,7 @@ class MainWindow(QMainWindow):
         Each ledger line includes the timestamp, batch name, id, split, status, and notes.
         """
         import os, fcntl, time
-        ledger_path = "ledger/splits-ledger.tsv"
+        ledger_path = LEDGER_PATH
         os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
         write_header = not os.path.exists(ledger_path) or os.path.getsize(ledger_path) == 0
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -412,6 +434,29 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Commit Error", str(e))
 
+    def get_table_data(self):
+        """Returns the table data as a list of rows (each row is a list of cell strings)."""
+        data = []
+        for row in range(self.table.rowCount()):
+            row_data = []
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+                row_data.append(item.text() if item is not None else "")
+            data.append(row_data)
+        return data
+
+    def set_table_data(self, data):
+        """Clears and repopulates the table with data (list of rows)."""
+        self.table.setRowCount(0)
+        for row_data in data:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            for col, text in enumerate(row_data):
+                new_item = QTableWidgetItem(text)
+                new_item.setFlags(new_item.flags() | Qt.ItemIsEditable)
+                self.table.setItem(row, col, new_item)
+        self.table.resizeColumnsToContents()
+
     def populate_table_from_results(self, results):
         self.table.setRowCount(0)
         for rec in results:
@@ -431,23 +476,7 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 3, QTableWidgetItem(str(glen)))
             self.table.setItem(row, 4, QTableWidgetItem("todo"))  # status
             self.table.setItem(row, 5, QTableWidgetItem(""))       # notes
-        self.table.resizeColumnsToContents()main_layout.addWidget(self.table)
-
-        # Allow custom context menu on the table.
-        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self.show_table_context_menu)
-        self.table.cellClicked.connect(self.prefill_find_field)
-        # Add shortcut to toggle ignore status for selected rows.
-        ignore_action = QAction("Toggle Ignore", self)
-        ignore_action.setShortcut("I")
-        ignore_action.triggered.connect(self.toggle_ignore_for_selected)
-        self.addAction(ignore_action)
-
-        # (Query button connected earlier in the params panel.)
-        from PyQt5.QtGui import QKeySequence
-        from PyQt5.QtWidgets import QShortcut, QInputDialog
-        commit_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
-        commit_shortcut.activated.connect(self.commit_edits)
+        self.table.resizeColumnsToContents()
 
     def query_words(self):
         # Get values from UI fields.
@@ -472,7 +501,7 @@ class MainWindow(QMainWindow):
         )
         self.populate_table_from_results(results)
 
-     def populate_table_from_results(self, results):
+    def populate_table_from_results(self, results):
         self.table.setRowCount(0)
         for rec in results:
             # For local word index, we assume rec has 3 elements; default id is the word.
@@ -617,6 +646,18 @@ class MainWindow(QMainWindow):
                 new_text = original_text.replace(find_text, replace_text)
                 item.setText(new_text)
         QMessageBox.information(self, "Find/Replace", "Replacement applied.")
+
+    def sort_table_by_prefix(self):
+        """Sorts the table rows by the 'id' cell (column 0) in lexicographical order."""
+        data = self.get_table_data()
+        sorted_data = sorted(data, key=lambda row: row[0].lower())
+        self.set_table_data(sorted_data)
+
+    def sort_table_by_suffix(self):
+        """Sorts the table rows by the 'id' cell (column 0) in suffix order (based on reversed text)."""
+        data = self.get_table_data()
+        sorted_data = sorted(data, key=lambda row: row[0][::-1].lower() if row[0] else "")
+        self.set_table_data(sorted_data)
 
     def prefill_find_field(self, row, col):
         # Only act if the clicked column is the split column (index 1).
