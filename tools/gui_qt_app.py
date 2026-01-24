@@ -219,120 +219,12 @@ class MainWindow(QMainWindow):
         # Main vertical layout
         main_layout = QVBoxLayout(central)
 
-
-        ###############################
-        # New Panel: Prefix, Suffix, and Regex panels (in separate rows)
-        ###############################
-        prefix_suffix_panel = QVBoxLayout()
-
-        # Row for prefix:
-        prefix_row = QHBoxLayout()
-        self.prefix_edit = PhoneticLineEdit(self)
-        self.prefix_edit.setUndoRedoEnabled(True)
-        prefix_row.addWidget(QLabel("Prefix:"))
-        prefix_row.addWidget(self.prefix_edit)
-        prefix_suffix_panel.addLayout(prefix_row)
-
-        # Row for suffix:
-        suffix_row = QHBoxLayout()
-        self.suffix_edit = PhoneticLineEdit(self)
-        self.suffix_edit.setUndoRedoEnabled(True)
-        suffix_row.addWidget(QLabel("Suffix:"))
-        suffix_row.addWidget(self.suffix_edit)
-        prefix_suffix_panel.addLayout(suffix_row)
-
-        # Row for regex:
-        regex_row = QHBoxLayout()
-        self.regex_edit = PhoneticLineEdit(self)
-        self.regex_edit.setPlaceholderText("Regex (optional)")
-        self.regex_edit.setUndoRedoEnabled(True)
-        regex_row.addWidget(QLabel("Regex:"))
-        regex_row.addWidget(self.regex_edit)
-        prefix_suffix_panel.addLayout(regex_row)
-
-        main_layout.addLayout(prefix_suffix_panel)
-
-
-        ###############################
-        # New Panel: Other query parameters
-        ###############################
-        params_row = QHBoxLayout()
-        self.length_edit = QLineEdit()
-        self.length_edit.setPlaceholderText("e.g., 4-9, 4-, or 7")
-        self.length_edit.setText("8-")  # Default value, adjust as desired.
-        self.limit_spin = QSpinBox()
-        self.limit_spin.setMinimum(1)
-        self.limit_spin.setMaximum(10000)
-        self.limit_spin.setValue(500)
-        self.exclude_cb = QCheckBox("Exclude accepted")
-        self.phonetic_cb = QCheckBox("Phonetic Input")
-        self.phonetic_cb.setChecked(True)
-        self.phonetic_cb.toggled.connect(self.refresh_phonetic_fields)
-        self.query_btn = QPushButton("Query")
-        self.query_btn.clicked.connect(self.query_words)
-        params_row.addWidget(QLabel("Min length:"))
-        params_row.addWidget(self.length_edit)
-        params_row.addWidget(QLabel("Limit:"))
-        params_row.addWidget(self.limit_spin)
-        params_row.addWidget(self.exclude_cb)
-        params_row.addWidget(self.phonetic_cb)
-        params_row.addWidget(self.query_btn)
-        main_layout.addLayout(params_row)
-
-        ###############################
-        # Find/Replace Panel (moved to the very top)
-        ###############################
-        find_layout = QHBoxLayout()
-        self.find_edit = PhoneticLineEdit(self)
-        self.find_edit.setPlaceholderText("Find")
-        self.find_edit.setUndoRedoEnabled(True)
-        self.replace_edit = PhoneticLineEdit(self)
-        self.replace_edit.setPlaceholderText("Replace")
-        self.replace_edit.setUndoRedoEnabled(True)
-        self.apply_replace_btn = QPushButton("Apply Replace")
-        self.apply_replace_btn.clicked.connect(self.apply_replace_to_cell)
-        find_layout.addWidget(QLabel("Find:"))
-        find_layout.addWidget(self.find_edit)
-        find_layout.addWidget(QLabel("Replace:"))
-        find_layout.addWidget(self.replace_edit)
-        find_layout.addWidget(self.apply_replace_btn)
-        main_layout.addLayout(find_layout)
-
-        ###############################
-        # Sort Panel: Sort by Prefix and Sort by Suffix
-        ###############################
-        sort_layout = QHBoxLayout()
-        sort_prefix_btn = QPushButton("Sort by Prefix")
-        sort_prefix_btn.clicked.connect(self.sort_table_by_prefix)
-        sort_suffix_btn = QPushButton("Sort by Suffix")
-        sort_suffix_btn.clicked.connect(self.sort_table_by_suffix)
-        sort_layout.addWidget(sort_prefix_btn)
-        sort_layout.addWidget(sort_suffix_btn)
-        main_layout.addLayout(sort_layout)
-        from PyQt5.QtGui import QKeySequence
-        MyShortcut(QKeySequence("Alt+P"), self, activated=self.sort_table_by_prefix)
-        MyShortcut(QKeySequence("Alt+S"), self, activated=self.sort_table_by_suffix)
-
-        ###############################
-        # Table display (below the top panels)
-        ###############################
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["id", "split", "freq", "glen", "status", "notes"])
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setEditTriggers(self.table.DoubleClicked | self.table.SelectedClicked | self.table.EditKeyPressed)
-        from PyQt5.QtWidgets import QHeaderView
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        main_layout.addWidget(self.table)
-
-        # Allow custom context menu on the table.
-        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self.show_table_context_menu)
-        self.table.cellClicked.connect(self.prefill_find_field)
-        # Add shortcut to toggle ignore status for selected rows.
-        ignore_action = QAction("Toggle Ignore", self)
-        ignore_action.setShortcut("I")
-        ignore_action.triggered.connect(self.toggle_ignore_for_selected)
-        self.addAction(ignore_action)
+        # Build and add individual panels:
+        main_layout.addLayout(self.build_prefix_suffix_regex_panel())
+        main_layout.addLayout(self.build_query_parameters_panel())
+        main_layout.addLayout(self.build_sort_panel())
+        main_layout.addWidget(self.build_table_panel())
+        main_layout.addLayout(self.build_find_replace_panel())
 
         # (Query button connected earlier in the params panel.)
         from PyQt5.QtGui import QKeySequence
@@ -541,6 +433,7 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 3, QTableWidgetItem(str(glen)))
             self.table.setItem(row, 4, QTableWidgetItem("todo"))  # status
             self.table.setItem(row, 5, QTableWidgetItem(""))       # notes
+
         self.table.resizeColumnsToContents()
 
     def populate_table_from_results(self, results):
@@ -700,6 +593,118 @@ class MainWindow(QMainWindow):
         data = self.get_table_data()
         sorted_data = sorted(data, key=lambda row: row[0][::-1].lower() if row[0] else "")
         self.set_table_data(sorted_data)
+
+    def build_find_replace_panel(self):
+        """
+        Returns a QHBoxLayout containing the Find/Replace widgets.
+        """
+        find_layout = QHBoxLayout()
+        self.find_edit = PhoneticLineEdit(self)
+        self.find_edit.setPlaceholderText("Find")
+        self.find_edit.setUndoRedoEnabled(True)
+        self.replace_edit = PhoneticLineEdit(self)
+        self.replace_edit.setPlaceholderText("Replace")
+        self.replace_edit.setUndoRedoEnabled(True)
+        self.apply_replace_btn = QPushButton("Apply Replace")
+        self.apply_replace_btn.clicked.connect(self.apply_replace_to_cell)
+        find_layout.addWidget(QLabel("Find:"))
+        find_layout.addWidget(self.find_edit)
+        find_layout.addWidget(QLabel("Replace:"))
+        find_layout.addWidget(self.replace_edit)
+        find_layout.addWidget(self.apply_replace_btn)
+        return find_layout
+
+    def build_prefix_suffix_regex_panel(self):
+        """
+        Returns a QVBoxLayout containing three rows:
+           - one for Prefix,
+           - one for Suffix,
+           - one for Regex.
+        """
+        panel = QVBoxLayout()
+        # Row for Prefix:
+        prefix_row = QHBoxLayout()
+        self.prefix_edit = PhoneticLineEdit(self)
+        self.prefix_edit.setUndoRedoEnabled(True)
+        prefix_row.addWidget(QLabel("Prefix:"))
+        prefix_row.addWidget(self.prefix_edit)
+        panel.addLayout(prefix_row)
+        # Row for Suffix:
+        suffix_row = QHBoxLayout()
+        self.suffix_edit = PhoneticLineEdit(self)
+        self.suffix_edit.setUndoRedoEnabled(True)
+        suffix_row.addWidget(QLabel("Suffix:"))
+        suffix_row.addWidget(self.suffix_edit)
+        panel.addLayout(suffix_row)
+        # Row for Regex:
+        regex_row = QHBoxLayout()
+        self.regex_edit = PhoneticLineEdit(self)
+        self.regex_edit.setPlaceholderText("Regex (optional)")
+        self.regex_edit.setUndoRedoEnabled(True)
+        regex_row.addWidget(QLabel("Regex:"))
+        regex_row.addWidget(self.regex_edit)
+        panel.addLayout(regex_row)
+        return panel
+
+    def build_query_parameters_panel(self):
+        """
+        Returns a QHBoxLayout for query parameters:
+           - Length specification,
+           - Limit spinner,
+           - Exclude accepted checkbox,
+           - Phonetic Input checkbox,
+           - Query button.
+        """
+        params_row = QHBoxLayout()
+        self.length_edit = QLineEdit()
+        self.length_edit.setPlaceholderText("e.g., 4-9, 4-, or 7")
+        self.length_edit.setText("8-")
+        self.limit_spin = QSpinBox()
+        self.limit_spin.setMinimum(1)
+        self.limit_spin.setMaximum(10000)
+        self.limit_spin.setValue(500)
+        self.exclude_cb = QCheckBox("Exclude accepted")
+        self.phonetic_cb = QCheckBox("Phonetic Input")
+        self.phonetic_cb.setChecked(True)
+        self.phonetic_cb.toggled.connect(self.refresh_phonetic_fields)
+        self.query_btn = QPushButton("Query")
+        self.query_btn.clicked.connect(self.query_words)
+        params_row.addWidget(QLabel("Length:"))
+        params_row.addWidget(self.length_edit)
+        params_row.addWidget(QLabel("Limit:"))
+        params_row.addWidget(self.limit_spin)
+        params_row.addWidget(self.exclude_cb)
+        params_row.addWidget(self.phonetic_cb)
+        params_row.addWidget(self.query_btn)
+        return params_row
+
+    def build_sort_panel(self):
+        """
+        Returns a QHBoxLayout containing buttons for sorting the table.
+        """
+        sort_layout = QHBoxLayout()
+        sort_prefix_btn = QPushButton("Sort by Prefix")
+        sort_prefix_btn.clicked.connect(self.sort_table_by_prefix)
+        sort_suffix_btn = QPushButton("Sort by Suffix")
+        sort_suffix_btn.clicked.connect(self.sort_table_by_suffix)
+        sort_layout.addWidget(sort_prefix_btn)
+        sort_layout.addWidget(sort_suffix_btn)
+        return sort_layout
+
+    def build_table_panel(self):
+        """
+        Creates and returns a QTableWidget configured for displaying the results.
+        """
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["id", "split", "freq", "glen", "status", "notes"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(self.table.DoubleClicked | self.table.SelectedClicked | self.table.EditKeyPressed)
+        from PyQt5.QtWidgets import QHeaderView
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_table_context_menu)
+        self.table.cellClicked.connect(self.prefill_find_field)
+        return self.table
 
     def prefill_find_field(self, row, col):
         # Only act if the clicked column is the split column (index 1).
