@@ -127,6 +127,15 @@ class PhoneticLineEdit(QLineEdit):
         logging.debug("Key press: key=%s, text='%s', current composition='%s', committed='%s'",
                       key, ch, self.composition, self.committed)
 
+        # Check if the cursor is not at the end or if there is any selected text.
+        if (self.hasSelectedText() or self.cursorPosition() < len(self.text())):
+            super().keyPressEvent(event)
+            new_text = self.text()
+            self.committed = new_text
+            self.composition = ""
+            logging.debug("Default behavior used. New text: '%s'", new_text)
+            return
+
         if key == Qt.Key_Backspace:
             if self.composition:
                 self.composition = self.composition[:-1]
@@ -173,6 +182,25 @@ class PhoneticLineEdit(QLineEdit):
             return
         else:
             super().keyPressEvent(event)
+    
+    def insertFromMimeData(self, source):
+        """ 
+        Handle paste events so that the pasted text replaces the selected text 
+        and the internal state is updated accordingly.
+        """
+        pasted_text = source.text()
+        if self.hasSelectedText():
+            cursor_pos = self.cursorPosition()
+            current_text = self.text()
+            sel_start = self.selectionStart()
+            sel_end = sel_start + len(self.selectedText())
+            new_text = current_text[:sel_start] + pasted_text + current_text[sel_end:]
+        else:
+            new_text = self.text()[:self.cursorPosition()] + pasted_text + self.text()[self.cursorPosition():]
+        self.committed = new_text
+        self.composition = ""
+        self.setText(new_text)
+        self.setCursorPosition(sel_start + len(pasted_text) if self.hasSelectedText() else len(new_text))
 
 class MainWindow(QMainWindow):
     def __init__(self, socket_path="run/tamil-words.sock", mode="server"):
