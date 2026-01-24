@@ -229,11 +229,12 @@ class MainWindow(QMainWindow):
         # New Panel: Other query parameters
         ###############################
         params_row = QHBoxLayout()
-        self.min_len_spin = QSpinBox()
-        self.min_len_spin.setMinimum(1)
-        self.min_len_spin.setValue(8)
+        self.length_edit = QLineEdit()
+        self.length_edit.setPlaceholderText("e.g., 4-9, 4-, or 7")
+        self.length_edit.setText("8-")  # Default value, adjust as desired.
         self.limit_spin = QSpinBox()
         self.limit_spin.setMinimum(1)
+        self.limit_spin.setMaximum(10000)
         self.limit_spin.setValue(500)
         self.exclude_cb = QCheckBox("Exclude accepted")
         self.phonetic_cb = QCheckBox("Phonetic Input")
@@ -242,7 +243,7 @@ class MainWindow(QMainWindow):
         self.query_btn = QPushButton("Query")
         self.query_btn.clicked.connect(self.query_words)
         params_row.addWidget(QLabel("Min length:"))
-        params_row.addWidget(self.min_len_spin)
+        params_row.addWidget(self.length_edit)
         params_row.addWidget(QLabel("Limit:"))
         params_row.addWidget(self.limit_spin)
         params_row.addWidget(self.exclude_cb)
@@ -314,19 +315,54 @@ class MainWindow(QMainWindow):
         MyShortcut(QKeySequence("Alt+S"), self, activated=lambda: self.suffix_edit.setFocus())
         MyShortcut(QKeySequence("Alt+R"), self, activated=lambda: self.regex_edit.setFocus())
         MyShortcut(QKeySequence("Alt+F"), self, activated=lambda: self.find_edit.setFocus())
-        MyShortcut(QKeySequence("Alt+L"), self, activated=lambda: self.replace_edit.setFocus())
-        MyShortcut(QKeySequence("Alt+M"), self, activated=lambda: self.min_len_spin.setFocus())
+        MyShortcut(QKeySequence("Alt+G"), self, activated=lambda: self.replace_edit.setFocus())
+        MyShortcut(QKeySequence("Alt+L"), self, activated=lambda: self.length_edit.setFocus())
         MyShortcut(QKeySequence("Alt+I"), self, activated=lambda: self.limit_spin.setFocus())
         MyShortcut(QKeySequence("Alt+Q"), self, activated=lambda: self.query_btn.setFocus())
+
+    def parse_length_spec(self, length_spec):
+        # Parse the length specification.
+        # Default values:
+        min_len = 1
+        max_len = None
+
+        if "-" in length_spec:
+            parts = length_spec.split("-", 1)
+            try:
+                if parts[0]:
+                    min_len = int(parts[0])
+                else:
+                    min_len = 1
+            except ValueError:
+                min_len = 1
+            try:
+                if parts[1]:
+                    max_len = int(parts[1])
+                else:
+                    max_len = None
+            except ValueError:
+                max_len = None
+        else:
+            try:
+                m = int(length_spec)
+                min_len = m
+                max_len = m
+            except ValueError:
+                min_len = 1
+                max_len = None
+
+        return min_len, max_len
 
     def query_words(self):
         # Get values from UI fields.
         prefix = self.prefix_edit.text().strip()
         suffix = self.suffix_edit.text().strip()
         regex = self.regex_edit.text().strip()
-        min_len = self.min_len_spin.value()
+        length_spec = self.length_edit.text().strip()  # new length specification field
         limit = self.limit_spin.value()
         exclude = self.exclude_cb.isChecked()  # boolean
+
+        min_len, max_len = self.parse_length_spec(length_spec)
 
         def exclude_fn(word):
             return exclude and (word in self.accepted_words())
@@ -335,6 +371,7 @@ class MainWindow(QMainWindow):
             prefix=prefix,
             suffix=suffix,
             min_len=min_len,
+            max_len=max_len,
             limit=limit,
             offset=0,
             exclude_fn=exclude_fn,
@@ -396,11 +433,11 @@ class MainWindow(QMainWindow):
        timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
        prefix = self.prefix_edit.text().strip()
        suffix = self.suffix_edit.text().strip()
-       min_len = self.min_len_spin.value()
+       length_spec = self.length_edit.text().strip()
        # Remove any characters that might interfere with filenames.
        safe_prefix = "".join(c for c in prefix if c.isalnum())
        safe_suffix = "".join(c for c in suffix if c.isalnum())
-       return f"{timestamp}-{safe_prefix}{min_len}{safe_suffix}.tsv"
+       return f"{timestamp}-{safe_prefix}-{length_spec}-{safe_suffix}.tsv"
 
     def commit_edits(self):
         default_batch_name = self.generate_batch_name()
@@ -477,29 +514,6 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 4, QTableWidgetItem("todo"))  # status
             self.table.setItem(row, 5, QTableWidgetItem(""))       # notes
         self.table.resizeColumnsToContents()
-
-    def query_words(self):
-        # Get values from UI fields.
-        prefix = self.prefix_edit.text().strip()
-        suffix = self.suffix_edit.text().strip()
-        regex = self.regex_edit.text().strip()
-        min_len = self.min_len_spin.value()
-        limit = self.limit_spin.value()
-        exclude = self.exclude_cb.isChecked()  # boolean
-
-        def exclude_fn(word):
-            return exclude and (word in self.accepted_words())
-
-        results = self.word_index.query_words(
-            prefix=prefix,
-            suffix=suffix,
-            min_len=min_len,
-            limit=limit,
-            offset=0,
-            exclude_fn=exclude_fn,
-            regex=regex
-        )
-        self.populate_table_from_results(results)
 
     def populate_table_from_results(self, results):
         self.table.setRowCount(0)

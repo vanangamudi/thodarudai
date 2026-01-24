@@ -37,17 +37,17 @@ class WordIndex:
         self.words.sort(key=lambda x: (-x[2], -x[1], x[0]))
         print('loading word list... DONE')
 
-    def query_words(self, prefix="", suffix="", min_len=1, limit=200, offset=0, exclude_fn=None, regex=""):
+    def query_words(self, prefix="", suffix="", min_len=1, max_len=None, limit=200, offset=0, exclude_fn=None, regex=""):
         """
         Returns a list of (word, freq, glen) tuples matching the query parameters.
-        Parameters:
-          - prefix: required starting substring.
-          - suffix: required ending substring.
-          - min_len: minimum grapheme length.
-          - limit: maximum number of results.
-          - offset: skip the first offset matches.
-          - exclude_fn: a function accepting a word and returning True if it should be skipped.
-          - regex: if provided, a regex pattern that the word must match.
+        - prefix: required starting substring.
+        - suffix: required ending substring.
+        - min_len: minimum grapheme length.
+        - max_len: if provided, maximum grapheme length (inclusive).
+        - limit: maximum number of results.
+        - offset: skip the first offset matches.
+        - exclude_fn: a function accepting a word and returning True if it should be skipped.
+        - regex: if provided, a regex pattern that the word must match.
         """
         results = []
         seen = 0
@@ -56,11 +56,13 @@ class WordIndex:
             try:
                 compiled_rx = re.compile(regex)
             except re.error:
-                # If regex fails, we simply ignore regex filtering.
                 compiled_rx = None
         for word, freq, glen in self.words:
+            # Filter by length.
             if glen < min_len:
-                break
+                continue
+            if max_len is not None and glen > max_len:
+                continue
             if prefix and not word.startswith(prefix):
                 continue
             if suffix and not word.endswith(suffix):
