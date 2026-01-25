@@ -227,14 +227,21 @@ class UnixServer(socketserver.UnixStreamServer):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--socket", default="run/tamil_words.sock")
-    ap.add_argument("--wordlist", default="data/wordlist.tsv")
-    ap.add_argument("--ledger", default="ledger/splits-ledger.tsv")
+    ap.add_argument("--profile", default="default",
+                    help="Profile name to choose different corpora")
+    ap.add_argument("--base_dir", default=None,
+                    help="Optional base directory for the profile")
     args = ap.parse_args()
     if not os.path.exists(args.wordlist):
         sys.stderr.write(f"wordlist not found: {args.wordlist}\n"); sys.exit(2)
     os.makedirs(os.path.dirname(args.ledger), exist_ok=True)
-    state = State(args.wordlist, args.ledger)
-    srv = UnixServer(args.socket, state)
+    from tools.profile import Profile
+    profile = Profile(name=args.profile, base_dir=args.base_dir)
+    wordlist_path = profile.wordlist_path
+    ledger_path = profile.ledger_path
+    socket_path = profile.socket_path
+    state = State(wordlist_path, ledger_path)
+    srv = UnixServer(socket_path, state)
     print(f"Server ready on {args.socket}; words={len(state.words)} accepted={len(state.accepted)}")
     try:
         srv.serve_forever()

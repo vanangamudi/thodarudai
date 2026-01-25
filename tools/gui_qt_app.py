@@ -182,10 +182,10 @@ class PhoneticLineEdit(QLineEdit):
             return
         else:
             super().keyPressEvent(event)
-    
+
     def insertFromMimeData(self, source):
-        """ 
-        Handle paste events so that the pasted text replaces the selected text 
+        """
+        Handle paste events so that the pasted text replaces the selected text
         and the internal state is updated accordingly.
         """
         pasted_text = source.text()
@@ -284,6 +284,8 @@ class MainWindow(QMainWindow):
 
         min_len, max_len = self.parse_length_spec(length_spec)
 
+        self.log_ui_event("QUERY", {"prefix": prefix, "suffix": suffix, "regex": regex, "length_spec": length_spec, "limit": limit, "exclude": exclude})
+
         def exclude_fn(word):
             return exclude and (word in self.accepted_words())
 
@@ -381,6 +383,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Commit",
                                         f"Edits committed locally to {filepath}")
                 self.update_ledger(tsv_lines, batch_name)
+                self.log_ui_event("COMMIT", {"batch": batch_name, "rows": len(tsv_lines)-1})
             except Exception as e:
                 QMessageBox.critical(self, "Commit Error", str(e))
         else:
@@ -388,6 +391,7 @@ class MainWindow(QMainWindow):
             try:
                 response = self.send_command(cmd, tsv_lines)
                 QMessageBox.information(self, "Commit", response)
+                self.log_ui_event("COMMIT", {"batch": batch_name, "rows": len(tsv_lines)-1, "server": True})
             except Exception as e:
                 QMessageBox.critical(self, "Commit Error", str(e))
 
@@ -456,6 +460,28 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 4, QTableWidgetItem("todo"))  # status
             self.table.setItem(row, 5, QTableWidgetItem(""))       # notes
 
+    def log_ui_event(self, event_type, parameters):
+        """
+        Append a UI event to the ledger log.
+        parameters should be a dictionary with key=value pairs.
+        The ledger file is a TSV file with header:
+          timestamp	event_type	parameters
+        """
+        import os, fcntl, time
+        ledger_path = LEDGER_PATH  # e.g. "data/splits-ledger.tsv"
+        os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
+        write_header = not os.path.exists(ledger_path) or os.path.getsize(ledger_path) == 0
+        ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        params_str = "; ".join(f"{k}={v}" for k, v in parameters.items())
+        line = f"{ts}\t{event_type}\t{params_str}\n"
+        with open(ledger_path, "a", encoding="utf-8") as lf:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            try:
+                if write_header:
+                    lf.write("timestamp\tevent_type\tparameters\n")
+                lf.write(line)
+            finally:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
     def refresh_phonetic_fields(self):
         for field in (self.prefix_edit, self.suffix_edit, self.regex_edit):
             field.update_display()
@@ -548,51 +574,95 @@ class MainWindow(QMainWindow):
             if item:
                 item.setBackground(color)
 
+
     def toggle_ignore_for_selected(self):
         # Use the selection model to get a list of selected rows.
         selected_indexes = self.table.selectionModel().selectedRows()
         for index in selected_indexes:
             row = index.row()
             self.toggle_ignore_status(row)
+        self.log_ui_event("MARK", {"count": len(selected_indexes)})
 
     def apply_replace_to_cell(self):
         """
-        Applies a find and replace operation on the currently selected cell
-        in the split column (column index 1). It replaces all occurrences of
-        the text in self.find_edit with the text in self.replace_edit.
+        Applies a find and replace operation on the currently selected cell(s)
+        in the split column (column index 1). If no cells are selected, the replacement is applied to all cells in that column.
         """
         find_text = self.find_edit.text()
         replace_text = self.replace_edit.text()
         if not find_text:
             QMessageBox.warning(self, "Find/Replace", "Please enter text to find.")
             return
+
         indexes = self.table.selectedIndexes()
-        # Filter for cells in column 1 (split column)
+        # Filter for cells in column 1 (the split column)
         target_indexes = [ix for ix in indexes if ix.column() == 1]
+
         if not target_indexes:
-            QMessageBox.warning(self, "Find/Replace", "Please select a cell in the split column.")
+            # No cells are selected. Replace in all cells in the split column.
+            target_indexes = []
+            for row in range(self.table.rowCount()):
+                # Obtain the model index for column 1
+                target_indexes.append(self.table.model().index(row, 1))
+    
+        if not target_indexes:
+            QMessageBox.warning(self, "Find/Replace", "No cells available in the split column.")
             return
-        # For each selected cell in column 1, perform find/replace.
+
+        count_replaced = 0
         for ix in target_indexes:
             row = ix.row()
             item = self.table.item(row, 1)
             if item:
                 original_text = item.text()
                 new_text = original_text.replace(find_text, replace_text)
+                if new_text != original_text:
+                    count_replaced += 1
                 item.setText(new_text)
-        QMessageBox.information(self, "Find/Replace", "Replacement applied.")
+
+        if count_replaced > 0:
+            self.log_ui_event("REPLACE", {
+                "find": find_text,
+                "replace": replace_text,
+                "cells_modified": count_replaced
+            })
+            QMessageBox.information(self, "Find/Replace", f"Replacement applied to {count_replaced} cell(s).")
+        else:
+            QMessageBox.information(self, "Find/Replace", "No replacements were made (find text not found).")
 
     def sort_table_by_prefix(self):
         """Sorts the table rows by the 'id' cell (column 0) in lexicographical order."""
         data = self.get_table_data()
         sorted_data = sorted(data, key=lambda row: row[0].lower())
         self.set_table_data(sorted_data)
+        self.log_ui_event("SORT", {"type": "prefix"})
 
     def sort_table_by_suffix(self):
         """Sorts the table rows by the 'id' cell (column 0) in suffix order (based on reversed text)."""
         data = self.get_table_data()
         sorted_data = sorted(data, key=lambda row: row[0][::-1].lower() if row[0] else "")
         self.set_table_data(sorted_data)
+        self.log_ui_event("SORT", {"type": "suffix"})
+    
+    def sort_table_custom(self, key_func, event_desc="custom"):
+        """
+        Generic function that sorts the table by a supplied key function.
+        key_func should be a function that accepts a row (list of cell strings) and returns a sorting key.
+        event_desc is a label for logging.
+        """
+        data = self.get_table_data()
+        sorted_data = sorted(data, key=key_func)
+        self.set_table_data(sorted_data)
+        self.log_ui_event("SORT", {"type": event_desc})
+    
+    def sort_table_by_length_and_suffix(self):
+        """
+        Sort the table first by grapheme length (descending) then by suffix order (by reversed 'split' text).
+        """
+        self.sort_table_custom(
+            key_func=lambda row: (-int(row[3]), row[1][::-1].lower() if row[1] else ""),
+            event_desc="length_and_suffix"
+        )
 
     def build_find_replace_panel(self):
         """
@@ -687,8 +757,12 @@ class MainWindow(QMainWindow):
         sort_prefix_btn.clicked.connect(self.sort_table_by_prefix)
         sort_suffix_btn = QPushButton("Sort by Suffix")
         sort_suffix_btn.clicked.connect(self.sort_table_by_suffix)
+        sort_custom_btn = QPushButton("Sort: Length & Suffix")
+        sort_custom_btn.clicked.connect(self.sort_table_by_length_and_suffix)
+        
         sort_layout.addWidget(sort_prefix_btn)
         sort_layout.addWidget(sort_suffix_btn)
+        sort_layout.addWidget(sort_custom_btn)
         return sort_layout
 
     def build_table_panel(self):
@@ -714,15 +788,22 @@ class MainWindow(QMainWindow):
                 self.find_edit.setText(item.text())
 
 if __name__ == "__main__":
-    import argparse
+    import argparse, os
+    from tools.profile import default_profile, Profile
     parser = argparse.ArgumentParser(description="Tamil Splits GUI Client")
-    parser.add_argument("--socket", default="run/tamil-words.sock", help="Path to Unix domain socket")
+    parser.add_argument("--profile", default="default", help="Profile name")
+    parser.add_argument("--base_dir", default=None, help="Optional base directory")
     parser.add_argument("--mode", default="server", choices=["server", "local"],
                         help="Operation mode: 'server' (commit via socket) or 'local' (write to file)")
     args = parser.parse_args()
+    profile = Profile(name=args.profile, base_dir=args.base_dir)
+    LEDGER_PATH = profile.ledger_path
+    WORDLIST_PATH = profile.wordlist_path
+    BATCHES_DIR = profile.batches_dir
+    SOCKET_PATH = profile.socket_path
 
     app = QApplication(sys.argv)
-    window = MainWindow(socket_path=args.socket, mode=args.mode)
+    window = MainWindow(socket_path=SOCKET_PATH, mode=args.mode)
     window.resize(1024, 600)
     window.show()
     sys.exit(app.exec_())

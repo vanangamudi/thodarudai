@@ -3,6 +3,7 @@ import sys
 import gzip
 from collections import Counter
 import arichuvadi as ari
+from tools.profile import default_profile
 
 def openfile(filepath, mode='rt', *args, **kwargs):
     if filepath.endswith('.gz'):
@@ -10,7 +11,9 @@ def openfile(filepath, mode='rt', *args, **kwargs):
     else:
         return open(filepath, mode, *args, **kwargs)
 
-def main(paths):
+def main(paths=None):
+    if paths is None or len(paths)==0:
+        paths = [default_profile.wordlist_path]
     cnt = Counter()
     for p in paths:
         with openfile(p) as f:
