@@ -604,7 +604,7 @@ class MainWindow(QMainWindow):
             for row in range(self.table.rowCount()):
                 # Obtain the model index for column 1
                 target_indexes.append(self.table.model().index(row, 1))
-    
+
         if not target_indexes:
             QMessageBox.warning(self, "Find/Replace", "No cells available in the split column.")
             return
@@ -643,7 +643,7 @@ class MainWindow(QMainWindow):
         sorted_data = sorted(data, key=lambda row: row[0][::-1].lower() if row[0] else "")
         self.set_table_data(sorted_data)
         self.log_ui_event("SORT", {"type": "suffix"})
-    
+
     def sort_table_custom(self, key_func, event_desc="custom"):
         """
         Generic function that sorts the table by a supplied key function.
@@ -654,7 +654,31 @@ class MainWindow(QMainWindow):
         sorted_data = sorted(data, key=key_func)
         self.set_table_data(sorted_data)
         self.log_ui_event("SORT", {"type": event_desc})
-    
+
+    def apply_custom_sort(self):
+        """
+        Evaluates the text from the custom sort field as a lambda function,
+        and sorts the table using that lambda as key.
+        """
+        lambda_str = self.sort_lambda_edit.text().strip()
+        if not lambda_str:
+            QMessageBox.warning(self, "Custom Sort", "Please enter a lambda function.")
+            return
+        try:
+            # For safety, restrict the available built-ins (optional)
+            allowed_builtins = {"int": int, "float": float, "str": str, "len": len}
+            key_func = eval(f'lambda {lambda_str}', {"__builtins__": allowed_builtins})
+            if not callable(key_func):
+                raise ValueError("Lambda does not evaluate to a callable function.")
+        except Exception as e:
+            QMessageBox.critical(self, "Custom Sort", f"Error evaluating lambda:\n{e}")
+            return
+        try:
+            # Use our generic sort function.
+            self.sort_table_custom(key_func, event_desc=f"custom: `{lambda_str}`")
+        except Exception as ex:
+            QMessageBox.critical(self, "Custom Sort", f"Sorting error:\n{ex}")
+
     def sort_table_by_length_and_suffix(self):
         """
         Sort the table first by grapheme length (descending) then by suffix order (by reversed 'split' text).
@@ -750,19 +774,34 @@ class MainWindow(QMainWindow):
 
     def build_sort_panel(self):
         """
-        Returns a QHBoxLayout containing buttons for sorting the table.
+        Returns a QHBoxLayout containing buttons for sorting the table,
+        as well as an editable field for a custom sort lambda.
         """
         sort_layout = QHBoxLayout()
+
         sort_prefix_btn = QPushButton("Sort by Prefix")
         sort_prefix_btn.clicked.connect(self.sort_table_by_prefix)
+
         sort_suffix_btn = QPushButton("Sort by Suffix")
         sort_suffix_btn.clicked.connect(self.sort_table_by_suffix)
-        sort_custom_btn = QPushButton("Sort: Length & Suffix")
-        sort_custom_btn.clicked.connect(self.sort_table_by_length_and_suffix)
-        
+
+        sort_standard_btn = QPushButton("Sort: Length & Suffix")
+        sort_standard_btn.clicked.connect(self.sort_table_by_length_and_suffix)
+
+        custom_sort_label = QLabel("Custom Sort:")
+        self.sort_lambda_edit = QLineEdit()
+        self.sort_lambda_edit.setPlaceholderText("Enter lambda row: ...")
+
+        custom_sort_apply_btn = QPushButton("Apply Custom Sort")
+        custom_sort_apply_btn.clicked.connect(self.apply_custom_sort)
+
         sort_layout.addWidget(sort_prefix_btn)
         sort_layout.addWidget(sort_suffix_btn)
-        sort_layout.addWidget(sort_custom_btn)
+        sort_layout.addWidget(sort_standard_btn)
+        sort_layout.addWidget(custom_sort_label)
+        sort_layout.addWidget(self.sort_lambda_edit)
+        sort_layout.addWidget(custom_sort_apply_btn)
+
         return sort_layout
 
     def build_table_panel(self):
