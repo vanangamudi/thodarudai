@@ -11,7 +11,6 @@ class Profile:
         self.wordlist_path = os.path.join(base_dir, name,  f"word-index.tsv")
         self.ledger_path = os.path.join(base_dir, name, f"ledger.tsv")
         self.batches_dir = os.path.join(base_dir, name, "batches")
-        self.socket_path = os.path.join(base_dir, name, f"tamil-words.sock")
         # Ensure the parent directories exist.
         os.makedirs(os.path.dirname(self.wordlist_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.ledger_path), exist_ok=True)

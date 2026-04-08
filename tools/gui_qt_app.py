@@ -2,7 +2,7 @@
 import logging
 import time
 import string
-import sys, socket
+import sys
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
@@ -14,7 +14,6 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem, QMenu, QAction, QMessageBox, QAbstractItemView, QInputDialog, QShortcut as MyShortcut
 )
 
-from urllib.parse import quote  # for percent encoding parameters
 
 from tools.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
 from tools.word_indexer import WordIndex
@@ -204,14 +203,11 @@ class PhoneticLineEdit(QLineEdit):
         self.setCursorPosition(sel_start + len(pasted_text) if self.hasSelectedText() else len(new_text))
 
 class MainWindow(QMainWindow):
-    def __init__(self, socket_path="run/tamil-words.sock", mode="server"):
+    def __init__(self):
         super().__init__()
-        self.socket_path = socket_path
-        self.mode = mode  # mode: either "server" or "local"
-        if self.mode == "local":
-            self.batch_dir = BATCHES_DIR
-            import os
-            os.makedirs(self.batch_dir, exist_ok=True)
+        import os
+        self.batch_dir = BATCHES_DIR
+        os.makedirs(self.batch_dir, exist_ok=True)
         self.wordlist_path = WORDLIST_PATH
         self.word_index = WordIndex(self.wordlist_path)
         self.setWindowTitle("Tamil Splits - Qt Client")
@@ -229,7 +225,6 @@ class MainWindow(QMainWindow):
 
         # (Query button connected earlier in the params panel.)
         from PyQt5.QtGui import QKeySequence
-        from PyQt5.QtWidgets import QInputDialog
         commit_shortcut = MyShortcut(QKeySequence("Ctrl+S"), self, activated=self.commit_edits)
         # Focus Shortcuts
         MyShortcut(QKeySequence("Alt+P"), self, activated=lambda: self.prefix_edit.setFocus())
@@ -305,13 +300,13 @@ class MainWindow(QMainWindow):
     def build_tsv_lines(self):
         """
         Builds a list of strings representing TSV lines from the current table data.
-        The first line is the header: "id\tsplit\tfreq\tglen\tstatus\tnotes"
+        The first line is the header: "id\tword\tfreq\tglen\tsplits\tstatus\tnotes"
         """
         lines = []
         header = "\t".join(["id", "word", "freq", "glen", "splits", "status", "notes"])
         lines.append(header)
         row_count = self.table.rowCount()
-        col_count = self.table.columnCount()  # expected 6 columns
+        col_count = self.table.columnCount()
         for row in range(row_count):
             row_data = []
             for col in range(col_count):
@@ -365,37 +360,17 @@ class MainWindow(QMainWindow):
 
     def commit_edits(self):
         default_batch_name = self.generate_batch_name()
-
-        if self.mode == "local":
-            batch_name = default_batch_name
-        else:
-            batch_name, ok = QInputDialog.getText(
-                self, "Batch Name", "Enter batch name:", text=default_batch_name)
-            if not ok or not batch_name.strip():
-                return
-            batch_name = batch_name.strip()
-
+        batch_name = default_batch_name
         tsv_lines = self.build_tsv_lines()
-
-        if self.mode == "local":
-            filepath = f"{self.batch_dir}/{batch_name}"
-            try:
-                with open(filepath, "w", encoding="utf-8") as f:
-                    f.write("\n".join(tsv_lines) + "\n")
-                QMessageBox.information(self, "Commit",
-                                        f"Edits committed locally to {filepath}")
-                self.update_ledger(tsv_lines, batch_name)
-                self.log_ui_event("COMMIT", {"batch": batch_name, "rows": len(tsv_lines)-1})
-            except Exception as e:
-                QMessageBox.critical(self, "Commit Error", str(e))
-        else:
-            cmd = f"COMMIT batch={quote(batch_name)} rows={len(tsv_lines)}"
-            try:
-                response = self.send_command(cmd, tsv_lines)
-                QMessageBox.information(self, "Commit", response)
-                self.log_ui_event("COMMIT", {"batch": batch_name, "rows": len(tsv_lines)-1, "server": True})
-            except Exception as e:
-                QMessageBox.critical(self, "Commit Error", str(e))
+        filepath = f"{self.batch_dir}/{batch_name}"
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write("\n".join(tsv_lines) + "\n")
+            QMessageBox.information(self, "Commit", f"Edits committed locally to {filepath}")
+            self.update_ledger(tsv_lines, batch_name)
+            self.log_ui_event("COMMIT", {"batch": batch_name, "rows": len(tsv_lines) - 1})
+        except Exception as e:
+            QMessageBox.critical(self, "Commit Error", str(e))
 
     def get_table_data(self):
         """Returns the table data as a list of rows (each row is a list of cell strings)."""
@@ -424,22 +399,24 @@ class MainWindow(QMainWindow):
     def populate_table_from_results(self, results):
         self.table.setRowCount(0)
         for rec in results:
-            # For local word index, we assume rec has 3 elements; default id is the word.
             if len(rec) == 3:
-                split_text, freq, glen = rec
-                rec_id = split_text
+                word, freq, glen = rec
+                rec_id = word
+                splits = ""
             elif len(rec) >= 4:
-                rec_id, split_text, freq, glen = rec[:4]
+                rec_id, word, freq, glen = rec[:4]
+                splits = rec[4] if len(rec) > 4 else ""
             else:
                 continue
             row = self.table.rowCount()
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(rec_id))
-            self.table.setItem(row, 1, QTableWidgetItem(split_text))
+            self.table.setItem(row, 1, QTableWidgetItem(word))
             self.table.setItem(row, 2, QTableWidgetItem(str(freq)))
             self.table.setItem(row, 3, QTableWidgetItem(str(glen)))
-            self.table.setItem(row, 4, QTableWidgetItem("todo"))  # status
-            self.table.setItem(row, 5, QTableWidgetItem(""))       # notes
+            self.table.setItem(row, 4, QTableWidgetItem(splits))   # splits
+            self.table.setItem(row, 5, QTableWidgetItem("todo"))   # status
+            self.table.setItem(row, 6, QTableWidgetItem(""))       # notes
 
     def log_ui_event(self, event_type, parameters):
         """
@@ -480,27 +457,6 @@ class MainWindow(QMainWindow):
                 item.setFlags(item.flags() | Qt.ItemIsEditable)
                 self.table.setItem(row, col, item)
 
-    def send_command(self, command, body=None):
-        """Connect to the Unix domain socket and send a command, reading the full response."""
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            client.connect(self.socket_path)
-        except Exception as e:
-            raise Exception(f"Could not connect to socket {self.socket_path}: {e}")
-
-        full_cmd = command + "\n"
-        if body:
-            full_cmd += "\n".join(body) + "\n"
-        client.sendall(full_cmd.encode("utf-8"))
-        client.shutdown(socket.SHUT_WR)
-        response = b""
-        while True:
-            data = client.recv(4096)
-            if not data:
-                break
-            response += data
-        client.close()
-        return response.decode("utf-8")
 
     def show_table_context_menu(self, pos):
         # Map viewport position to global.
@@ -567,7 +523,7 @@ class MainWindow(QMainWindow):
     def apply_replace_to_cell(self):
         """
         Applies a find and replace operation on the currently selected cell(s)
-        in the split column (column index 1). If no cells are selected, the replacement is applied to all cells in that column.
+        in the splits column (column index 4). If no cells are selected, the replacement is applied to all cells in that column.
         """
         find_text = self.find_edit.text()
         replace_text = self.replace_edit.text()
@@ -576,24 +532,24 @@ class MainWindow(QMainWindow):
             return
 
         indexes = self.table.selectedIndexes()
-        # Filter for cells in column 1 (the split column)
-        target_indexes = [ix for ix in indexes if ix.column() == 1]
+        # Filter for cells in column 4 (the splits column)
+        target_indexes = [ix for ix in indexes if ix.column() == 4]
 
         if not target_indexes:
-            # No cells are selected. Replace in all cells in the split column.
+            # No cells are selected. Replace in all cells in the splits column.
             target_indexes = []
             for row in range(self.table.rowCount()):
-                # Obtain the model index for column 1
-                target_indexes.append(self.table.model().index(row, 1))
+                # Obtain the model index for column 4
+                target_indexes.append(self.table.model().index(row, 4))
 
         if not target_indexes:
-            QMessageBox.warning(self, "Find/Replace", "No cells available in the split column.")
+            QMessageBox.warning(self, "Find/Replace", "No cells available in the splits column.")
             return
 
         count_replaced = 0
         for ix in target_indexes:
             row = ix.row()
-            item = self.table.item(row, 1)
+            item = self.table.item(row, 4)
             if item:
                 original_text = item.text()
                 new_text = original_text.replace(find_text, replace_text)
@@ -807,82 +763,11 @@ class MainWindow(QMainWindow):
         return self.table
 
     def prefill_find_field(self, row, col):
-        # Only act if the clicked column is the split column (index 1).
-        if col == 1:
+        # Only act if the clicked column is the splits column (index 4).
+        if col == 4:
             item = self.table.item(row, col)
             if item:
                 self.find_edit.setText(item.text())
-    def accepted_words(self):
-        acc = set()
-        try:
-            with open(LEDGER_PATH, "r", encoding="utf-8") as f:
-                hdr = f.readline().strip().split("\t")
-                idx = {h: i for i, h in enumerate(hdr)}
-                needed = {"word", "status"}
-                if not needed.issubset(idx.keys()):
-                    return acc
-                for line in f:
-                    if not line.strip():
-                        continue
-                    cols = line.rstrip("\n").split("\t")
-                    if cols[idx["status"]] == "accepted":
-                        acc.add(cols[idx["word"]])
-        except FileNotFoundError:
-            pass
-        return acc
-    def fetch_suggestions(self):
-        # Collect words from table
-        words = []
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 1)
-            if item:
-                words.append(item.text())
-        if not words:
-            QMessageBox.information(self, "Suggestions", "No rows loaded.")
-            return
-        cmd = f"PREDICT rows={len(words)}"
-        try:
-            resp = self.send_command(cmd, words)
-        except Exception as e:
-            QMessageBox.critical(self, "Suggestions Error", str(e))
-            return
-        lines = resp.strip().splitlines()
-        if not lines or not lines[0].startswith("OK"):
-            QMessageBox.critical(self, "Suggestions Error", f"Bad response: {lines[:2]}")
-            return
-        hdr = lines[1].split("\t")
-        col = {h: i for i, h in enumerate(hdr)}
-        sugg = {}
-        for ln in lines[2:]:
-            if not ln.strip():
-                continue
-            c = ln.split("\t")
-            w = c[col["word"]]
-            sp = c[col["splits"]]
-            sugg[w] = sp
-        filled = 0
-        for row in range(self.table.rowCount()):
-            w = self.table.item(row, 1).text()
-            sp_item = self.table.item(row, 4)
-            if sp_item is None:
-                sp_item = QTableWidgetItem("")
-                self.table.setItem(row, 4, sp_item)
-            if not sp_item.text().strip():
-                s = sugg.get(w, "")
-                if s:
-                    sp_item.setText(s)
-                    filled += 1
-        self.log_ui_event("SUGGEST", {"rows": len(words), "filled": filled})
-        QMessageBox.information(self, "Suggestions", f"Filled splits for {filled} row(s).")
-
-    def train_model(self):
-        try:
-            resp = self.send_command("TRAIN")
-        except Exception as e:
-            QMessageBox.critical(self, "Train Error", str(e))
-            return
-        self.log_ui_event("TRAIN", {"response": resp.strip().splitlines()[0] if resp else "noresp"})
-        QMessageBox.information(self, "Train", resp)
 
 if __name__ == "__main__":
     import argparse, os
@@ -890,17 +775,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tamil Splits GUI Client")
     parser.add_argument("--profile", default="default", help="Profile name")
     parser.add_argument("--base_dir", default=None, help="Optional base directory")
-    parser.add_argument("--mode", default="server", choices=["server", "local"],
-                        help="Operation mode: 'server' (commit via socket) or 'local' (write to file)")
     args = parser.parse_args()
     profile = Profile(name=args.profile, base_dir=args.base_dir)
     LEDGER_PATH = profile.ledger_path
     WORDLIST_PATH = profile.wordlist_path
     BATCHES_DIR = profile.batches_dir
-    SOCKET_PATH = profile.socket_path
 
     app = QApplication(sys.argv)
-    window = MainWindow(socket_path=SOCKET_PATH, mode=args.mode)
+    window = MainWindow()
     window.resize(1024, 600)
     window.show()
     sys.exit(app.exec_())
