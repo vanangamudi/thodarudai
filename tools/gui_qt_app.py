@@ -22,6 +22,7 @@ from tools.word_indexer import WordIndex
 BATCHES_DIR = "data/batches"
 LEDGER_PATH = "data/splits-ledger.tsv"
 WORDLIST_PATH = "data/word-index.tsv"
+UI_LOG_PATH = "data/ui-log.tsv"
 class PhoneticLineEdit(QLineEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -307,7 +308,7 @@ class MainWindow(QMainWindow):
         The first line is the header: "id\tsplit\tfreq\tglen\tstatus\tnotes"
         """
         lines = []
-        header = "\t".join(["id", "split", "freq", "glen", "status", "notes"])
+        header = "\t".join(["id", "word", "freq", "glen", "splits", "status", "notes"])
         lines.append(header)
         row_count = self.table.rowCount()
         col_count = self.table.columnCount()  # expected 6 columns
@@ -335,16 +336,17 @@ class MainWindow(QMainWindow):
             try:
                 if write_header:
                     # Write ledger header: timestamp, batch, id, split, status, notes
-                    lf.write("\t".join(["timestamp", "batch", "id", "split", "status", "notes"]) + "\n")
+                    lf.write("\t".join(["timestamp", "batch", "id", "word", "status", "splits", "notes"]) + "\n")
                 for ln in tsv_lines[1:]:
                     if not ln.strip():
                         continue
                     cols = ln.split("\t")
                     rec_id = cols[0].strip()
-                    split_text = cols[1].strip()
-                    status = cols[4].strip() or "todo"
-                    notes = cols[5].strip() if len(cols) > 5 else ""
-                    lf.write(f"{ts}\t{batch_name}\t{rec_id or split_text}\t{split_text}\t{status}\t{notes}\n")
+                    word = cols[1].strip()
+                    status = cols[5].strip() or "todo"
+                    splits = cols[4].strip()
+                    notes = cols[6].strip() if len(cols) > 6 else ""
+                    lf.write(f"{ts}\t{batch_name}\t{rec_id or word}\t{word}\t{status}\t{splits}\t{notes}\n")
             finally:
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
@@ -418,27 +420,6 @@ class MainWindow(QMainWindow):
                 self.table.setItem(row, col, new_item)
         self.table.resizeColumnsToContents()
 
-    def populate_table_from_results(self, results):
-        self.table.setRowCount(0)
-        for rec in results:
-            # For local word index, we assume rec has 3 elements; default id is the word.
-            if len(rec) == 3:
-                split_text, freq, glen = rec
-                rec_id = split_text
-            elif len(rec) >= 4:
-                rec_id, split_text, freq, glen = rec[:4]
-            else:
-                continue
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(rec_id))
-            self.table.setItem(row, 1, QTableWidgetItem(split_text))
-            self.table.setItem(row, 2, QTableWidgetItem(str(freq)))
-            self.table.setItem(row, 3, QTableWidgetItem(str(glen)))
-            self.table.setItem(row, 4, QTableWidgetItem("todo"))  # status
-            self.table.setItem(row, 5, QTableWidgetItem(""))       # notes
-
-        self.table.resizeColumnsToContents()
 
     def populate_table_from_results(self, results):
         self.table.setRowCount(0)
@@ -468,13 +449,13 @@ class MainWindow(QMainWindow):
           timestamp	event_type	parameters
         """
         import os, fcntl, time
-        ledger_path = LEDGER_PATH  # e.g. "data/splits-ledger.tsv"
-        os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
-        write_header = not os.path.exists(ledger_path) or os.path.getsize(ledger_path) == 0
+        log_path = UI_LOG_PATH  # e.g. "data/ui-log.tsv"
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        write_header = not os.path.exists(log_path) or os.path.getsize(log_path) == 0
         ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         params_str = "; ".join(f"{k}={v}" for k, v in parameters.items())
         line = f"{ts}\t{event_type}\t{params_str}\n"
-        with open(ledger_path, "a", encoding="utf-8") as lf:
+        with open(log_path, "a", encoding="utf-8") as lf:
             fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
             try:
                 if write_header:
@@ -770,6 +751,12 @@ class MainWindow(QMainWindow):
         params_row.addWidget(self.exclude_cb)
         params_row.addWidget(self.phonetic_cb)
         params_row.addWidget(self.query_btn)
+        self.suggest_btn = QPushButton("Fetch Suggestions")
+        self.suggest_btn.clicked.connect(self.fetch_suggestions)
+        self.train_btn = QPushButton("Train Model")
+        self.train_btn.clicked.connect(self.train_model)
+        params_row.addWidget(self.suggest_btn)
+        params_row.addWidget(self.train_btn)
         return params_row
 
     def build_sort_panel(self):
@@ -808,8 +795,8 @@ class MainWindow(QMainWindow):
         """
         Creates and returns a QTableWidget configured for displaying the results.
         """
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["id", "split", "freq", "glen", "status", "notes"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["id", "word", "freq", "glen", "splits", "status", "notes"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(self.table.DoubleClicked | self.table.SelectedClicked | self.table.EditKeyPressed)
         from PyQt5.QtWidgets import QHeaderView
@@ -825,6 +812,77 @@ class MainWindow(QMainWindow):
             item = self.table.item(row, col)
             if item:
                 self.find_edit.setText(item.text())
+    def accepted_words(self):
+        acc = set()
+        try:
+            with open(LEDGER_PATH, "r", encoding="utf-8") as f:
+                hdr = f.readline().strip().split("\t")
+                idx = {h: i for i, h in enumerate(hdr)}
+                needed = {"word", "status"}
+                if not needed.issubset(idx.keys()):
+                    return acc
+                for line in f:
+                    if not line.strip():
+                        continue
+                    cols = line.rstrip("\n").split("\t")
+                    if cols[idx["status"]] == "accepted":
+                        acc.add(cols[idx["word"]])
+        except FileNotFoundError:
+            pass
+        return acc
+    def fetch_suggestions(self):
+        # Collect words from table
+        words = []
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 1)
+            if item:
+                words.append(item.text())
+        if not words:
+            QMessageBox.information(self, "Suggestions", "No rows loaded.")
+            return
+        cmd = f"PREDICT rows={len(words)}"
+        try:
+            resp = self.send_command(cmd, words)
+        except Exception as e:
+            QMessageBox.critical(self, "Suggestions Error", str(e))
+            return
+        lines = resp.strip().splitlines()
+        if not lines or not lines[0].startswith("OK"):
+            QMessageBox.critical(self, "Suggestions Error", f"Bad response: {lines[:2]}")
+            return
+        hdr = lines[1].split("\t")
+        col = {h: i for i, h in enumerate(hdr)}
+        sugg = {}
+        for ln in lines[2:]:
+            if not ln.strip():
+                continue
+            c = ln.split("\t")
+            w = c[col["word"]]
+            sp = c[col["splits"]]
+            sugg[w] = sp
+        filled = 0
+        for row in range(self.table.rowCount()):
+            w = self.table.item(row, 1).text()
+            sp_item = self.table.item(row, 4)
+            if sp_item is None:
+                sp_item = QTableWidgetItem("")
+                self.table.setItem(row, 4, sp_item)
+            if not sp_item.text().strip():
+                s = sugg.get(w, "")
+                if s:
+                    sp_item.setText(s)
+                    filled += 1
+        self.log_ui_event("SUGGEST", {"rows": len(words), "filled": filled})
+        QMessageBox.information(self, "Suggestions", f"Filled splits for {filled} row(s).")
+
+    def train_model(self):
+        try:
+            resp = self.send_command("TRAIN")
+        except Exception as e:
+            QMessageBox.critical(self, "Train Error", str(e))
+            return
+        self.log_ui_event("TRAIN", {"response": resp.strip().splitlines()[0] if resp else "noresp"})
+        QMessageBox.information(self, "Train", resp)
 
 if __name__ == "__main__":
     import argparse, os

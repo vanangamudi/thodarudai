@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os, sys, time, shlex, argparse, fcntl, re as stdre
+from tools.active_model import ActiveModel
 import socket, socketserver
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
@@ -34,6 +35,7 @@ class State:
         self.latest_status = {}  # word -> status
         self.accepted = set()
         self._load_ledger()
+        self.model = ActiveModel(self.ledger_path)
 
     def _load_wordlist(self):
         words = []
@@ -88,6 +90,10 @@ class Handler(socketserver.StreamRequestHandler):
             self._handle_reload(params)
         elif cmd == "STATS":
             self._handle_stats()
+        elif cmd == "PREDICT":
+            self._handle_predict(params)
+        elif cmd == "TRAIN":
+            self._handle_train(params)
         else:
             self._write_err("bad_command", f"Unknown: {cmd}")
 
@@ -118,7 +124,7 @@ class Handler(socketserver.StreamRequestHandler):
 
         def exclude_fn(word):
             return exclude and (word in self.server.state.accepted)
-        
+
         out_rows = self.server.state.word_index.query_words(
             prefix=prefix,
             suffix=suffix,
@@ -132,6 +138,9 @@ class Handler(socketserver.StreamRequestHandler):
         logging.info("QUERY params: %s; returning %d words", p, len(out_rows))
         self._write_ok({"rows":len(out_rows)})
         self.wfile.write(("\t".join(REQUIRED_BATCH_HDR) + "\n").encode("utf-8"))
+        for w,fr,gl in out_rows:
+            status = self.server.state.latest_status.get(w, "todo")
+            self.wfile.write(f"{w}\t{w}\t{fr}\t{gl}\t\t{status}\t\n".encode("utf-8"))
         for w,fr,gl in out_rows:
             self.wfile.write(f"{w}\t{fr}\t{gl}\t\ttodo\t\n".encode("utf-8"))
 
@@ -189,6 +198,11 @@ class Handler(socketserver.StreamRequestHandler):
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
+        try:
+            self.server.state.model.reload()
+        except Exception as e:
+            logging.warning("Model reload after commit failed: %s", e)
+
         logging.info("COMMIT batch=%s: committed %d rows; accepted_added=%d", batch, committed, accepted_added)
         self._write_ok({"committed":committed, "accepted_added":accepted_added})
 
@@ -215,6 +229,47 @@ class Handler(socketserver.StreamRequestHandler):
         logging.info("STATS: %s", kv)
         self._write_ok(kv)
 
+    def _handle_predict(self, p):
+        try:
+            rows = int(p.get("rows","0"))
+        except:
+            self._write_err("bad_rows","rows must be int"); return
+        if rows <= 0:
+            self._write_err("bad_rows","rows must be > 0"); return
+
+        words = []
+        for _ in range(rows):
+            ln = self.rfile.readline().decode("utf-8")
+            if not ln:
+                self._write_err("bad_body","unexpected EOF"); return
+            words.append(ln.rstrip("\n"))
+
+        preds = self.server.state.model.predict_many(words)
+        self._write_ok({"rows": len(preds)})
+        self.wfile.write("word\tsplits\tscore\n".encode("utf-8"))
+        for w, sp, sc in preds:
+            self.wfile.write(f"{w}\t{sp}\t{sc:.4f}\n".encode("utf-8"))
+
+    def _handle_train(self, p):
+        examples = []
+        try:
+            with open(self.server.ledger_path, "r", encoding="utf-8") as f:
+                hdr = f.readline().strip().split("\t")
+                if set(hdr) >= set(LEDGER_HDR):
+                    idx = {h:i for i,h in enumerate(hdr)}
+                    for line in f:
+                        if not line.strip(): continue
+                        cols = line.rstrip("\n").split("\t")
+                        word = cols[idx["word"]]
+                        status = cols[idx["status"]]
+                        splits = cols[idx["splits"]]
+                        if status == "accepted" and splits:
+                            examples.append((word, splits))
+        except FileNotFoundError:
+            pass
+        metrics = self.server.state.model.train(examples)
+        self._write_ok({"updated": metrics.get("updated", 0)})
+
 class UnixServer(socketserver.UnixStreamServer):
     def __init__(self, sock_path, state):
         if os.path.exists(sock_path):
@@ -226,15 +281,9 @@ class UnixServer(socketserver.UnixStreamServer):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--socket", default="run/tamil_words.sock")
-    ap.add_argument("--profile", default="default",
-                    help="Profile name to choose different corpora")
-    ap.add_argument("--base_dir", default=None,
-                    help="Optional base directory for the profile")
+    ap.add_argument("--profile", default="default", help="Profile name to choose different corpora")
+    ap.add_argument("--base_dir", default=None, help="Optional base directory for the profile")
     args = ap.parse_args()
-    if not os.path.exists(args.wordlist):
-        sys.stderr.write(f"wordlist not found: {args.wordlist}\n"); sys.exit(2)
-    os.makedirs(os.path.dirname(args.ledger), exist_ok=True)
     from tools.profile import Profile
     profile = Profile(name=args.profile, base_dir=args.base_dir)
     wordlist_path = profile.wordlist_path
@@ -242,15 +291,15 @@ def main():
     socket_path = profile.socket_path
     state = State(wordlist_path, ledger_path)
     srv = UnixServer(socket_path, state)
-    print(f"Server ready on {args.socket}; words={len(state.words)} accepted={len(state.accepted)}")
+    print(f"Server ready on {socket_path}; words={len(state.words)} accepted={len(state.accepted)}")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         srv.server_close()
-        if os.path.exists(args.socket):
-            os.unlink(args.socket)
+        if os.path.exists(socket_path):
+            os.unlink(socket_path)
 
 if __name__ == "__main__":
     main()
