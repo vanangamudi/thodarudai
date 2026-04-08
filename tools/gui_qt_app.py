@@ -300,10 +300,10 @@ class MainWindow(QMainWindow):
     def build_tsv_lines(self):
         """
         Builds a list of strings representing TSV lines from the current table data.
-        The first line is the header: "id\tword\tfreq\tglen\tsplits\tstatus\tnotes"
+        The first line is the header: "id\tword\tsplits\tfreq\tglen\tstatus\tnotes"
         """
         lines = []
-        header = "\t".join(["id", "word", "freq", "glen", "splits", "status", "notes"])
+        header = "\t".join(["id", "word", "splits", "freq", "glen", "status", "notes"])
         lines.append(header)
         row_count = self.table.rowCount()
         col_count = self.table.columnCount()
@@ -338,8 +338,8 @@ class MainWindow(QMainWindow):
                     cols = ln.split("\t")
                     rec_id = cols[0].strip()
                     word = cols[1].strip()
+                    splits = cols[2].strip()
                     status = cols[5].strip() or "todo"
-                    splits = cols[4].strip()
                     notes = cols[6].strip() if len(cols) > 6 else ""
                     lf.write(f"{ts}\t{batch_name}\t{rec_id or word}\t{word}\t{status}\t{splits}\t{notes}\n")
             finally:
@@ -385,6 +385,7 @@ class MainWindow(QMainWindow):
 
     def set_table_data(self, data):
         """Clears and repopulates the table with data (list of rows)."""
+        self.table.setColumnCount(7)
         self.table.setRowCount(0)
         for row_data in data:
             row = self.table.rowCount()
@@ -399,24 +400,37 @@ class MainWindow(QMainWindow):
     def populate_table_from_results(self, results):
         self.table.setRowCount(0)
         for rec in results:
+            # Normalize inputs: extract word, freq, glen, optional splits
             if len(rec) == 3:
                 word, freq, glen = rec
-                rec_id = word
-                splits = ""
-            elif len(rec) >= 4:
-                rec_id, word, freq, glen = rec[:4]
-                splits = rec[4] if len(rec) > 4 else ""
+                splits = word  # default splits to word
+            elif len(rec) >= 5:
+                # Assume 7-col order: id, word, splits, freq, glen, status, notes
+                # or at least enough to get word/splits/freq/glen in that order.
+                word = rec[1]
+                splits = rec[2] if rec[2] else rec[1]
+                freq = rec[3]
+                glen = rec[4]
+            elif len(rec) == 4:
+                # Assume order: id, word, freq, glen
+                word = rec[1]
+                freq = rec[2]
+                glen = rec[3]
+                splits = word
             else:
                 continue
+
             row = self.table.rowCount()
             self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(rec_id))
-            self.table.setItem(row, 1, QTableWidgetItem(word))
-            self.table.setItem(row, 2, QTableWidgetItem(str(freq)))
-            self.table.setItem(row, 3, QTableWidgetItem(str(glen)))
-            self.table.setItem(row, 4, QTableWidgetItem(splits))   # splits
-            self.table.setItem(row, 5, QTableWidgetItem("todo"))   # status
-            self.table.setItem(row, 6, QTableWidgetItem(""))       # notes
+            rec_id = str(row + 1)  # numeric (stringified) sequential id
+
+            self.table.setItem(row, 0, QTableWidgetItem(rec_id))       # id (numeric as string)
+            self.table.setItem(row, 1, QTableWidgetItem(word))         # word (string)
+            self.table.setItem(row, 2, QTableWidgetItem(splits))       # splits (string; default=word)
+            self.table.setItem(row, 3, QTableWidgetItem(str(freq)))    # freq
+            self.table.setItem(row, 4, QTableWidgetItem(str(glen)))    # glen
+            self.table.setItem(row, 5, QTableWidgetItem("todo"))       # status
+            self.table.setItem(row, 6, QTableWidgetItem(""))           # notes
 
     def log_ui_event(self, event_type, parameters):
         """
@@ -523,7 +537,7 @@ class MainWindow(QMainWindow):
     def apply_replace_to_cell(self):
         """
         Applies a find and replace operation on the currently selected cell(s)
-        in the splits column (column index 4). If no cells are selected, the replacement is applied to all cells in that column.
+        in the splits column (column index 2). If no cells are selected, the replacement is applied to all cells in that column.
         """
         find_text = self.find_edit.text()
         replace_text = self.replace_edit.text()
@@ -532,15 +546,15 @@ class MainWindow(QMainWindow):
             return
 
         indexes = self.table.selectedIndexes()
-        # Filter for cells in column 4 (the splits column)
-        target_indexes = [ix for ix in indexes if ix.column() == 4]
+        # Filter for cells in column 2 (the splits column)
+        target_indexes = [ix for ix in indexes if ix.column() == 2]
 
         if not target_indexes:
             # No cells are selected. Replace in all cells in the splits column.
             target_indexes = []
             for row in range(self.table.rowCount()):
-                # Obtain the model index for column 4
-                target_indexes.append(self.table.model().index(row, 4))
+                # Obtain the model index for column 2
+                target_indexes.append(self.table.model().index(row, 2))
 
         if not target_indexes:
             QMessageBox.warning(self, "Find/Replace", "No cells available in the splits column.")
@@ -549,7 +563,7 @@ class MainWindow(QMainWindow):
         count_replaced = 0
         for ix in target_indexes:
             row = ix.row()
-            item = self.table.item(row, 4)
+            item = self.table.item(row, 2)
             if item:
                 original_text = item.text()
                 new_text = original_text.replace(find_text, replace_text)
@@ -568,9 +582,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Find/Replace", "No replacements were made (find text not found).")
 
     def sort_table_by_prefix(self):
-        """Sorts the table rows by the 'id' cell (column 0) in lexicographical order."""
+        """Sorts the table rows by the numeric 'id' (column 0) ascending."""
         data = self.get_table_data()
-        sorted_data = sorted(data, key=lambda row: row[0].lower())
+        def id_key(row):
+            try:
+                return int(row[0])
+            except Exception:
+                return float('inf')
+        sorted_data = sorted(data, key=id_key)
         self.set_table_data(sorted_data)
         self.log_ui_event("SORT", {"type": "prefix"})
 
@@ -618,10 +637,10 @@ class MainWindow(QMainWindow):
 
     def sort_table_by_length_and_suffix(self):
         """
-        Sort the table first by grapheme length (descending) then by suffix order (by reversed 'split' text).
+        Sorts the table rows by grapheme length (descending) then by suffix order (by reversed word text).
         """
         self.sort_table_custom(
-            key_func=lambda row: (-int(row[3]), row[1][::-1].lower() if row[1] else ""),
+            key_func=lambda row: (-int(row[4]), row[1][::-1].lower() if row[1] else ""),
             event_desc="length_and_suffix"
         )
 
@@ -707,12 +726,6 @@ class MainWindow(QMainWindow):
         params_row.addWidget(self.exclude_cb)
         params_row.addWidget(self.phonetic_cb)
         params_row.addWidget(self.query_btn)
-        self.suggest_btn = QPushButton("Fetch Suggestions")
-        self.suggest_btn.clicked.connect(self.fetch_suggestions)
-        self.train_btn = QPushButton("Train Model")
-        self.train_btn.clicked.connect(self.train_model)
-        params_row.addWidget(self.suggest_btn)
-        params_row.addWidget(self.train_btn)
         return params_row
 
     def build_sort_panel(self):
@@ -752,19 +765,23 @@ class MainWindow(QMainWindow):
         Creates and returns a QTableWidget configured for displaying the results.
         """
         self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["id", "word", "freq", "glen", "splits", "status", "notes"])
+        self.table.setColumnCount(7)  # ensure fixed column count
+        self.table.setHorizontalHeaderLabels(["id", "word", "splits", "freq", "glen", "status", "notes"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(self.table.DoubleClicked | self.table.SelectedClicked | self.table.EditKeyPressed)
         from PyQt5.QtWidgets import QHeaderView
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setColumnHidden(0, False)  # make sure 'id' is not hidden
+        self.table.setColumnWidth(0, 120)     # give 'id' a minimum visible width
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_table_context_menu)
         self.table.cellClicked.connect(self.prefill_find_field)
         return self.table
 
     def prefill_find_field(self, row, col):
-        # Only act if the clicked column is the splits column (index 4).
-        if col == 4:
+        # Only act if the clicked column is the splits column (index 2).
+        if col == 2:
             item = self.table.item(row, col)
             if item:
                 self.find_edit.setText(item.text())
