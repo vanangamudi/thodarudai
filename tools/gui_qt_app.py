@@ -21,7 +21,7 @@ from tools.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
 from tools.curation_index import CuratedIndex
 from tools.word_indexer import WordIndex
 
-TOKEN_DELIMITER = "-"
+TOKEN_DELIMITER = " "
 BATCHES_DIR = "data/batches"
 LEDGER_PATH = "data/splits-ledger.tsv"
 WORDLIST_PATH = "data/word-index.tsv"
