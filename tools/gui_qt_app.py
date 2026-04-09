@@ -13,13 +13,26 @@ from PyQt5.QtWidgets import QLineEdit
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QLabel, QPushButton, QSpinBox, QCheckBox, QTableWidget,
-    QTableWidgetItem, QMessageBox, QAbstractItemView, QShortcut as MyShortcut
+    QTableWidgetItem, QMessageBox, QAbstractItemView, QMenu, QAction,
+    QInputDialog, QShortcut as MyShortcut
 )
 
 
 from tools.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
 from tools.curation_index import CuratedIndex
 from tools.word_indexer import WordIndex
+
+# Shared WordIndex cache keyed by absolute wordlist path
+WORD_INDEX_CACHE = {}
+def get_shared_word_index(wordlist_path):
+    wi = WORD_INDEX_CACHE.get(wordlist_path)
+    if wi is None:
+        wi = WordIndex(wordlist_path)
+        WORD_INDEX_CACHE[wordlist_path] = wi
+        logging.info("Loaded WordIndex once: %s (%d words)", wordlist_path, len(wi.words))
+    else:
+        logging.info("Reusing shared WordIndex: %s (%d words)", wordlist_path, len(wi.words))
+    return wi
 
 TOKEN_DELIMITER = " "
 BATCHES_DIR = "data/batches"
@@ -35,6 +48,13 @@ class PhoneticLineEdit(QLineEdit):
         # Holds the composition in progress as a roman sequence
         self.composition = ""
         self.trailing = ""
+
+    def set_text_tamil(self, s):
+        """Set field text to a Tamil string; clear composition/trailing and refresh."""
+        self.committed = s or ""
+        self.composition = ""
+        self.trailing = ""
+        self.update_display()
 
     def setUndoRedoEnabled(self, enabled):
         """
@@ -248,7 +268,7 @@ class MainWindow(QMainWindow):
         logging.info("Batches directory: %s", self.batch_dir)
         os.makedirs(self.batch_dir, exist_ok=True)
         self.wordlist_path = WORDLIST_PATH
-        self.word_index = WordIndex(self.wordlist_path)
+        self.word_index = get_shared_word_index(self.wordlist_path)
         self.curated = CuratedIndex(self.batch_dir)
         self.curated.reload()
         logging.info("Curated index (from batches) loaded: %d word(s)", self.curated.curated_count)
@@ -286,6 +306,14 @@ class MainWindow(QMainWindow):
         MyShortcut(QKeySequence("Alt+Q"), self, activated=lambda: self.query_btn.setFocus())
         MyShortcut(QKeySequence("Alt+M"), self, activated=self.toggle_reminder_for_selected)  # toggle reminder on selection
         MyShortcut(QKeySequence("Alt+B"), self, activated=self.show_reminder_bag)             # show reminder bag
+
+        # Keep spawned windows alive
+        self.child_windows = []
+
+        # New window shortcuts
+        from PyQt5.QtGui import QKeySequence
+        MyShortcut(QKeySequence("Ctrl+N"), self, activated=self.open_new_window_with_current_query)
+        MyShortcut(QKeySequence("Ctrl+Shift+N"), self, activated=self.open_new_window_from_selection)
 
     def parse_length_spec(self, length_spec):
         # Parse the length specification.
@@ -890,6 +918,19 @@ class MainWindow(QMainWindow):
         params_row.addWidget(self.limit_spin)
         params_row.addWidget(self.phonetic_cb)
         params_row.addWidget(self.query_btn)
+
+        new_win_btn = QPushButton("New Window")
+        new_win_btn.setToolTip("Open a new window with current query")
+        new_win_btn.setFocusPolicy(Qt.NoFocus)
+        new_win_btn.clicked.connect(self.open_new_window_with_current_query)
+
+        new_win_sel_btn = QPushButton("New Window from Selection")
+        new_win_sel_btn.setToolTip("Use selected text as prefix/suffix/regex in a new window")
+        new_win_sel_btn.setFocusPolicy(Qt.NoFocus)
+        new_win_sel_btn.clicked.connect(self.open_new_window_from_selection)
+
+        params_row.addWidget(new_win_btn)
+        params_row.addWidget(new_win_sel_btn)
         return params_row
 
     def build_sort_panel(self):
@@ -941,6 +982,8 @@ class MainWindow(QMainWindow):
         self.table.setColumnHidden(0, False)  # ensure 'id' is visible
         self.table.setColumnWidth(0, 120)
         self.table.cellClicked.connect(self.prefill_find_field)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.on_table_context_menu)
         return self.table
 
     def prefill_find_field(self, row, col):
@@ -978,6 +1021,98 @@ class MainWindow(QMainWindow):
                     it = self.table.item(row, c)
                     if it:
                         it.setBackground(Qt.white)
+
+    def _collect_query_params(self):
+        return {
+            "prefix": self.prefix_edit.text().strip(),
+            "suffix": self.suffix_edit.text().strip(),
+            "regex": self.regex_edit.text().strip(),
+            "length_spec": self.length_edit.text().strip(),
+            "limit": int(self.limit_spin.value()),
+        }
+
+    def _apply_query_params(self, p):
+        self.prefix_edit.set_text_tamil(p.get("prefix", ""))
+        self.suffix_edit.set_text_tamil(p.get("suffix", ""))
+        self.regex_edit.set_text_tamil(p.get("regex", ""))
+        self.length_edit.setText(p.get("length_spec", ""))
+        self.limit_spin.setValue(int(p.get("limit", self.limit_spin.value())))
+
+    def open_new_window_with_current_query(self):
+        """Spawn a new window, clone current query params, run, and show."""
+        params = self._collect_query_params()
+        win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size)
+        win._apply_query_params(params)
+        win.query_words()
+        self.child_windows.append(win)
+        win.show()
+        self.log_ui_event("NEW_WINDOW", params)
+
+    def open_new_window_from_selection(self):
+        """Spawn a new window from selected text in any input field."""
+        candidates = []
+        for field in (self.prefix_edit, self.suffix_edit, self.regex_edit, self.find_edit, self.replace_edit):
+            if isinstance(field, PhoneticLineEdit) and field.hasSelectedText():
+                sel = field.selectedText().strip()
+                if sel:
+                    candidates.append(sel)
+        if not candidates:
+            w = QApplication.focusWidget()
+            if isinstance(w, PhoneticLineEdit):
+                t = (w.selectedText() if w.hasSelectedText() else w.text()).strip()
+                if t:
+                    candidates.append(t)
+        if not candidates:
+            QMessageBox.information(self, "New Window", "No text selected or present in the active field.")
+            return
+        text = candidates[0]
+        choice, ok = QInputDialog.getItem(self, "New Window", "Use text as:", ["suffix", "prefix", "regex"], 0, False)
+        if not ok:
+            return
+        params = self._collect_query_params()
+        params["prefix"] = text if choice == "prefix" else ""
+        params["suffix"] = text if choice == "suffix" else ""
+        params["regex"]  = text if choice == "regex"  else ""
+        win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size)
+        win._apply_query_params(params)
+        win.query_words()
+        self.child_windows.append(win)
+        win.show()
+        self.log_ui_event("NEW_WINDOW_SELECTION", {"choice": choice, "text": text, **params})
+    def on_table_context_menu(self, pos):
+        """Right-click on table: open menu to launch a new window using the clicked cell text as prefix/suffix/regex."""
+        index = self.table.indexAt(pos)
+        if not index.isValid():
+            return
+        row, col = index.row(), index.column()
+        editor = self.table.focusWidget()
+        if isinstance(editor, QLineEdit) and editor.hasSelectedText():
+            text = editor.selectedText().strip()
+        else:
+            item = self.table.item(row, col)
+            text = item.text().strip() if item else ""
+            if not text:
+                wi = self.table.item(row, 1)
+                text = wi.text().strip() if wi else ""
+        if not text:
+            return
+        menu = QMenu(self)
+        def launch(kind):
+            params = self._collect_query_params()
+            params["prefix"] = text if kind == "prefix" else ""
+            params["suffix"] = text if kind == "suffix" else ""
+            params["regex"]  = text if kind == "regex" else ""
+            win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size)
+            win._apply_query_params(params)
+            win.query_words()
+            self.child_windows.append(win)
+            win.show()
+            self.log_ui_event("NEW_WINDOW_TABLE", {"kind": kind, "text": text, **params})
+        a1 = QAction(f"New Window as Prefix: {text}", self); a1.triggered.connect(lambda: launch("prefix"))
+        a2 = QAction(f"New Window as Suffix: {text}", self); a2.triggered.connect(lambda: launch("suffix"))
+        a3 = QAction(f"New Window as Regex: {text}", self); a3.triggered.connect(lambda: launch("regex"))
+        menu.addAction(a1); menu.addAction(a2); menu.addAction(a3)
+        menu.exec_(self.table.viewport().mapToGlobal(pos))
 
 if __name__ == "__main__":
     import argparse, os
