@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import QLineEdit
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QLabel, QPushButton, QSpinBox, QCheckBox, QTableWidget,
-    QTableWidgetItem, QMenu, QAction, QMessageBox, QAbstractItemView, QInputDialog, QShortcut as MyShortcut
+    QTableWidgetItem, QMessageBox, QAbstractItemView, QShortcut as MyShortcut
 )
 
 
@@ -221,6 +221,10 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(self.build_query_parameters_panel())
         main_layout.addLayout(self.build_sort_panel())
         main_layout.addWidget(self.build_table_panel())
+        self.original_splits = {}
+        self.edited_ids = set()
+        self.suppress_item_changed = False
+        self.table.itemChanged.connect(self.on_cell_changed)
         main_layout.addLayout(self.build_find_replace_panel())
 
         # (Query button connected earlier in the params panel.)
@@ -276,14 +280,10 @@ class MainWindow(QMainWindow):
         regex = self.regex_edit.text().strip()
         length_spec = self.length_edit.text().strip()  # new length specification field
         limit = self.limit_spin.value()
-        exclude = self.exclude_cb.isChecked()  # boolean
 
         min_len, max_len = self.parse_length_spec(length_spec)
 
-        self.log_ui_event("QUERY", {"prefix": prefix, "suffix": suffix, "regex": regex, "length_spec": length_spec, "limit": limit, "exclude": exclude})
-
-        def exclude_fn(word):
-            return exclude and (word in self.accepted_words())
+        self.log_ui_event("QUERY", {"prefix": prefix, "suffix": suffix, "regex": regex, "length_spec": length_spec, "limit": limit})
 
         results = self.word_index.query_words(
             prefix=prefix,
@@ -292,7 +292,6 @@ class MainWindow(QMainWindow):
             max_len=max_len,
             limit=limit,
             offset=0,
-            exclude_fn=exclude_fn,
             regex=regex
         )
         self.populate_table_from_results(results)
@@ -300,10 +299,10 @@ class MainWindow(QMainWindow):
     def build_tsv_lines(self):
         """
         Builds a list of strings representing TSV lines from the current table data.
-        The first line is the header: "id\tword\tsplits\tfreq\tglen\tstatus\tnotes"
+        The first line is the header: "id\tword\tsplits\tfreq\tglen\tnotes"
         """
         lines = []
-        header = "\t".join(["id", "word", "splits", "freq", "glen", "status", "notes"])
+        header = "\t".join(["id", "word", "splits", "freq", "glen", "notes"])
         lines.append(header)
         row_count = self.table.rowCount()
         col_count = self.table.columnCount()
@@ -319,7 +318,7 @@ class MainWindow(QMainWindow):
         """
         Given TSV lines (list of strings) built from the table and a batch name,
         this function appends ledger entries to the ledger file.
-        Each ledger line includes the timestamp, batch name, id, split, status, and notes.
+        Each ledger line includes the timestamp, batch name, id, word, splits, and notes.
         """
         import os, fcntl, time
         ledger_path = LEDGER_PATH
@@ -330,8 +329,7 @@ class MainWindow(QMainWindow):
             fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
             try:
                 if write_header:
-                    # Write ledger header: timestamp, batch, id, split, status, notes
-                    lf.write("\t".join(["timestamp", "batch", "id", "word", "status", "splits", "notes"]) + "\n")
+                    lf.write("\t".join(["timestamp", "batch", "id", "word", "splits", "notes"]) + "\n")
                 for ln in tsv_lines[1:]:
                     if not ln.strip():
                         continue
@@ -339,9 +337,8 @@ class MainWindow(QMainWindow):
                     rec_id = cols[0].strip()
                     word = cols[1].strip()
                     splits = cols[2].strip()
-                    status = cols[5].strip() or "todo"
-                    notes = cols[6].strip() if len(cols) > 6 else ""
-                    lf.write(f"{ts}\t{batch_name}\t{rec_id or word}\t{word}\t{status}\t{splits}\t{notes}\n")
+                    notes = cols[5].strip() if len(cols) > 5 else ""
+                    lf.write(f"{ts}\t{batch_name}\t{rec_id or word}\t{word}\t{splits}\t{notes}\n")
             finally:
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
@@ -354,21 +351,42 @@ class MainWindow(QMainWindow):
        suffix = self.suffix_edit.text().strip()
        length_spec = self.length_edit.text().strip()
        # Remove any characters that might interfere with filenames.
-       safe_prefix = "".join(c for c in prefix if c.isalnum())
-       safe_suffix = "".join(c for c in suffix if c.isalnum())
+       # safe_prefix = "".join(c for c in prefix if c.isalnum())
+       # safe_suffix = "".join(c for c in suffix if c.isalnum())
+       safe_prefix, safe_suffix = prefix, suffix
        return f"{timestamp}-{safe_prefix}-{length_spec}-{safe_suffix}.tsv"
 
     def commit_edits(self):
+        # Collect only rows whose 'splits' were edited
+        edited_rows = []
+        for row in range(self.table.rowCount()):
+            id_item = self.table.item(row, 0)
+            sp_item = self.table.item(row, 2)
+            if not id_item or not sp_item:
+                continue
+            rec_id = id_item.text()
+            curr_splits = sp_item.text()
+            orig = self.original_splits.get(rec_id, "")
+            if curr_splits != orig:
+                word = (self.table.item(row, 1).text() if self.table.item(row, 1) else "")
+                freq = (self.table.item(row, 3).text() if self.table.item(row, 3) else "")
+                glen = (self.table.item(row, 4).text() if self.table.item(row, 4) else "")
+                notes = (self.table.item(row, 5).text() if self.table.item(row, 5) else "")
+                edited_rows.append([rec_id, word, curr_splits, freq, glen, notes])
+        if not edited_rows:
+            QMessageBox.information(self, "Commit", "No edits to save.")
+            return
         default_batch_name = self.generate_batch_name()
         batch_name = default_batch_name
-        tsv_lines = self.build_tsv_lines()
+        tsv_lines = ["\t".join(["id","word","splits","freq","glen","notes"])]
+        tsv_lines.extend("\t".join(r) for r in edited_rows)
         filepath = f"{self.batch_dir}/{batch_name}"
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write("\n".join(tsv_lines) + "\n")
-            QMessageBox.information(self, "Commit", f"Edits committed locally to {filepath}")
             self.update_ledger(tsv_lines, batch_name)
-            self.log_ui_event("COMMIT", {"batch": batch_name, "rows": len(tsv_lines) - 1})
+            self.log_ui_event("COMMIT", {"batch": batch_name, "saved_rows": len(edited_rows)})
+            QMessageBox.information(self, "Commit", f"Saved {len(edited_rows)} edited row(s) to {filepath}")
         except Exception as e:
             QMessageBox.critical(self, "Commit Error", str(e))
 
@@ -385,7 +403,8 @@ class MainWindow(QMainWindow):
 
     def set_table_data(self, data):
         """Clears and repopulates the table with data (list of rows)."""
-        self.table.setColumnCount(7)
+        self.suppress_item_changed = True
+        self.table.setColumnCount(6)
         self.table.setRowCount(0)
         for row_data in data:
             row = self.table.rowCount()
@@ -395,9 +414,15 @@ class MainWindow(QMainWindow):
                 new_item.setFlags(new_item.flags() | Qt.ItemIsEditable)
                 self.table.setItem(row, col, new_item)
         self.table.resizeColumnsToContents()
+        self.suppress_item_changed = False
 
 
     def populate_table_from_results(self, results):
+        # Suppress change tracking while loading
+        self.suppress_item_changed = True
+        self.original_splits = {}
+        self.edited_ids = set()
+        self.table.setColumnCount(6)
         self.table.setRowCount(0)
         for rec in results:
             # Normalize inputs: extract word, freq, glen, optional splits
@@ -405,8 +430,7 @@ class MainWindow(QMainWindow):
                 word, freq, glen = rec
                 splits = word  # default splits to word
             elif len(rec) >= 5:
-                # Assume 7-col order: id, word, splits, freq, glen, status, notes
-                # or at least enough to get word/splits/freq/glen in that order.
+                # Assume 7-col order from prior formats: id, word, splits, freq, glen, ...
                 word = rec[1]
                 splits = rec[2] if rec[2] else rec[1]
                 freq = rec[3]
@@ -424,13 +448,19 @@ class MainWindow(QMainWindow):
             self.table.insertRow(row)
             rec_id = str(row + 1)  # numeric (stringified) sequential id
 
-            self.table.setItem(row, 0, QTableWidgetItem(rec_id))       # id (numeric as string)
-            self.table.setItem(row, 1, QTableWidgetItem(word))         # word (string)
-            self.table.setItem(row, 2, QTableWidgetItem(splits))       # splits (string; default=word)
-            self.table.setItem(row, 3, QTableWidgetItem(str(freq)))    # freq
-            self.table.setItem(row, 4, QTableWidgetItem(str(glen)))    # glen
-            self.table.setItem(row, 5, QTableWidgetItem("todo"))       # status
-            self.table.setItem(row, 6, QTableWidgetItem(""))           # notes
+            # 6-column order: id, word, splits, freq, glen, notes
+            self.table.setItem(row, 0, QTableWidgetItem(rec_id))
+            self.table.setItem(row, 1, QTableWidgetItem(word))
+            self.table.setItem(row, 2, QTableWidgetItem(splits))
+            self.table.setItem(row, 3, QTableWidgetItem(str(freq)))
+            self.table.setItem(row, 4, QTableWidgetItem(str(glen)))
+            self.table.setItem(row, 5, QTableWidgetItem(""))  # notes
+
+            # Record original splits for edit tracking
+            self.original_splits[rec_id] = splits
+
+        self.table.resizeColumnsToContents()
+        self.suppress_item_changed = False
 
     def log_ui_event(self, event_type, parameters):
         """
@@ -472,67 +502,9 @@ class MainWindow(QMainWindow):
                 self.table.setItem(row, col, item)
 
 
-    def show_table_context_menu(self, pos):
-        # Map viewport position to global.
-        global_pos = self.table.viewport().mapToGlobal(pos)
-        # Determine the row that was right-clicked.
-        item = self.table.itemAt(pos)
-        if not item:
-            return
-        clicked_row = item.row()
-        # If the clicked row is not already selected, select it.
-        if not self.table.selectionModel().isRowSelected(clicked_row, self.table.rootIndex()):
-            self.table.clearSelection()
-            self.table.selectRow(clicked_row)
-        # Get the set of selected rows.
-        selected_rows = self.table.selectionModel().selectedRows()
-        # Determine the appropriate action text.
-        # For simplicity, if all selected rows have status "ignored",
-        # then the action becomes "Unmark as Ignored".
-        # Otherwise, use "Mark as Ignored".
-        all_ignored = True
-        for index in selected_rows:
-            row = index.row()
-            status_item = self.table.item(row, 5)
-            status_text = status_item.text().strip().lower() if status_item else ""
-            if status_text != "ignored":
-                all_ignored = False
-                break
-        action_text = "Unmark as Ignored" if all_ignored else "Mark as Ignored"
-        # Create a QMenu with the toggle action.
-        menu = QMenu()
-        toggle_action = menu.addAction(action_text)
-        chosen = menu.exec_(global_pos)
-        if chosen == toggle_action:
-            self.toggle_ignore_for_selected()
-
-    def toggle_ignore_status(self, row):
-        # Column 5 holds the status.
-        status_item = self.table.item(row, 5)
-        if not status_item:
-            status_item = QTableWidgetItem("")
-            self.table.setItem(row, 5, status_item)
-        current_status = status_item.text().strip().lower()
-        if current_status == "ignored":
-            new_status = "todo"
-        else:
-            new_status = "ignored"
-        status_item.setText(new_status)
-        # Optionally, visually mark the row.
-        color = Qt.lightGray if new_status == "ignored" else Qt.white
-        for col in range(self.table.columnCount()):
-            item = self.table.item(row, col)
-            if item:
-                item.setBackground(color)
 
 
-    def toggle_ignore_for_selected(self):
-        # Use the selection model to get a list of selected rows.
-        selected_indexes = self.table.selectionModel().selectedRows()
-        for index in selected_indexes:
-            row = index.row()
-            self.toggle_ignore_status(row)
-        self.log_ui_event("MARK", {"count": len(selected_indexes)})
+
 
     def apply_replace_to_cell(self):
         """
@@ -713,7 +685,6 @@ class MainWindow(QMainWindow):
         self.limit_spin.setMinimum(1)
         self.limit_spin.setMaximum(10000)
         self.limit_spin.setValue(500)
-        self.exclude_cb = QCheckBox("Exclude accepted")
         self.phonetic_cb = QCheckBox("Phonetic Input")
         self.phonetic_cb.setChecked(True)
         self.phonetic_cb.toggled.connect(self.refresh_phonetic_fields)
@@ -723,7 +694,6 @@ class MainWindow(QMainWindow):
         params_row.addWidget(self.length_edit)
         params_row.addWidget(QLabel("Limit:"))
         params_row.addWidget(self.limit_spin)
-        params_row.addWidget(self.exclude_cb)
         params_row.addWidget(self.phonetic_cb)
         params_row.addWidget(self.query_btn)
         return params_row
@@ -764,18 +734,16 @@ class MainWindow(QMainWindow):
         """
         Creates and returns a QTableWidget configured for displaying the results.
         """
-        self.table = QTableWidget(0, 7)
-        self.table.setColumnCount(7)  # ensure fixed column count
-        self.table.setHorizontalHeaderLabels(["id", "word", "splits", "freq", "glen", "status", "notes"])
+        self.table = QTableWidget(0, 6)
+        self.table.setColumnCount(6)  # ensure fixed column count
+        self.table.setHorizontalHeaderLabels(["id", "word", "splits", "freq", "glen", "notes"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(self.table.DoubleClicked | self.table.SelectedClicked | self.table.EditKeyPressed)
         from PyQt5.QtWidgets import QHeaderView
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
-        self.table.setColumnHidden(0, False)  # make sure 'id' is not hidden
-        self.table.setColumnWidth(0, 120)     # give 'id' a minimum visible width
-        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self.show_table_context_menu)
+        self.table.setColumnHidden(0, False)  # ensure 'id' is visible
+        self.table.setColumnWidth(0, 120)
         self.table.cellClicked.connect(self.prefill_find_field)
         return self.table
 
@@ -785,6 +753,35 @@ class MainWindow(QMainWindow):
             item = self.table.item(row, col)
             if item:
                 self.find_edit.setText(item.text())
+
+    def on_cell_changed(self, item):
+        if self.suppress_item_changed:
+            return
+        # Track only changes in the 'splits' column (2)
+        if item.column() != 2:
+            return
+        row = item.row()
+        id_item = self.table.item(row, 0)
+        if not id_item:
+            return
+        rec_id = id_item.text()
+        curr = item.text()
+        orig = self.original_splits.get(rec_id, "")
+        if curr != orig:
+            if rec_id not in self.edited_ids:
+                self.edited_ids.add(rec_id)
+                self.log_ui_event("EDIT", {"id": rec_id})
+                for c in range(self.table.columnCount()):
+                    it = self.table.item(row, c)
+                    if it:
+                        it.setBackground(Qt.yellow)
+        else:
+            if rec_id in self.edited_ids:
+                self.edited_ids.remove(rec_id)
+                for c in range(self.table.columnCount()):
+                    it = self.table.item(row, c)
+                    if it:
+                        it.setBackground(Qt.white)
 
 if __name__ == "__main__":
     import argparse, os
