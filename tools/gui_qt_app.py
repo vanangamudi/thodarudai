@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QLabel, QPushButton, QSpinBox, QCheckBox, QTableWidget,
     QTableWidgetItem, QMessageBox, QAbstractItemView, QMenu, QAction,
-    QInputDialog, QShortcut as MyShortcut
+    QInputDialog, QStyledItemDelegate, QShortcut as MyShortcut
 )
 
 
@@ -234,6 +234,43 @@ class PhoneticLineEdit(QLineEdit):
             self.trailing = current_text[cp:]
         self.composition = ""
         self.update_display()
+    
+    def contextMenuEvent(self, event):
+        # Base QLineEdit menu
+        menu = self.createStandardContextMenu()
+        # Selected text if any, otherwise full field text
+        text = self.selectedText().strip() if self.hasSelectedText() else self.text().strip()
+        if text:
+            menu.addSeparator()
+            win = self.window()
+            if hasattr(win, "new_window_from_text"):
+                for kind, label in (("prefix", "Prefix"), ("suffix", "Suffix"), ("regex", "Regex")):
+                    act = QAction(f"New Window as {label}: {text}", self)
+                    act.triggered.connect(lambda _, k=kind, t=text: win.new_window_from_text(k, t))
+                    menu.addAction(act)
+        menu.exec_(event.globalPos())
+
+class TableCellLineEdit(QLineEdit):
+    def contextMenuEvent(self, event):
+        # Start with the standard menu (cut/copy/paste/select all)
+        menu = self.createStandardContextMenu()
+        # Determine selected text or full cell text
+        text = self.selectedText().strip() if self.hasSelectedText() else self.text().strip()
+        if text:
+            menu.addSeparator()
+            win = self.window()
+            if hasattr(win, "new_window_from_text"):
+                for kind, label in (("prefix", "Prefix"), ("suffix", "Suffix"), ("regex", "Regex")):
+                    act = QAction(f"New Window as {label}: {text}", self)
+                    act.triggered.connect(lambda _, k=kind, t=text: win.new_window_from_text(k, t))
+                    menu.addAction(act)
+        menu.exec_(event.globalPos())
+
+class TableEditDelegate(QStyledItemDelegate):
+    def createEditor(self, parent, option, index):
+        ed = TableCellLineEdit(parent)
+        ed.setFrame(False)
+        return ed
 
 class MainWindow(QMainWindow):
     def __init__(self, ui_scale=1.5, font_size=None):
@@ -979,6 +1016,7 @@ class MainWindow(QMainWindow):
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(int(28 * self.ui_scale))
         self.table.horizontalHeader().setMinimumHeight(int(30 * self.ui_scale))
+        self.table.setItemDelegate(TableEditDelegate(self.table))
         self.table.setColumnHidden(0, False)  # ensure 'id' is visible
         self.table.setColumnWidth(0, 120)
         self.table.cellClicked.connect(self.prefill_find_field)
@@ -1079,6 +1117,19 @@ class MainWindow(QMainWindow):
         self.child_windows.append(win)
         win.show()
         self.log_ui_event("NEW_WINDOW_SELECTION", {"choice": choice, "text": text, **params})
+    
+    def new_window_from_text(self, kind, text):
+        """Spawn a new window using 'text' as prefix/suffix/regex per 'kind'."""
+        params = self._collect_query_params()
+        params["prefix"] = text if kind == "prefix" else ""
+        params["suffix"] = text if kind == "suffix" else ""
+        params["regex"]  = text if kind == "regex"  else ""
+        win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size)
+        win._apply_query_params(params)
+        win.query_words()
+        self.child_windows.append(win)
+        win.show()
+        self.log_ui_event("NEW_WINDOW_CONTEXT", {"kind": kind, "text": text, **params})
     def on_table_context_menu(self, pos):
         """Right-click on table: open menu to launch a new window using the clicked cell text as prefix/suffix/regex."""
         index = self.table.indexAt(pos)
@@ -1097,21 +1148,10 @@ class MainWindow(QMainWindow):
         if not text:
             return
         menu = QMenu(self)
-        def launch(kind):
-            params = self._collect_query_params()
-            params["prefix"] = text if kind == "prefix" else ""
-            params["suffix"] = text if kind == "suffix" else ""
-            params["regex"]  = text if kind == "regex" else ""
-            win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size)
-            win._apply_query_params(params)
-            win.query_words()
-            self.child_windows.append(win)
-            win.show()
-            self.log_ui_event("NEW_WINDOW_TABLE", {"kind": kind, "text": text, **params})
-        a1 = QAction(f"New Window as Prefix: {text}", self); a1.triggered.connect(lambda: launch("prefix"))
-        a2 = QAction(f"New Window as Suffix: {text}", self); a2.triggered.connect(lambda: launch("suffix"))
-        a3 = QAction(f"New Window as Regex: {text}", self); a3.triggered.connect(lambda: launch("regex"))
-        menu.addAction(a1); menu.addAction(a2); menu.addAction(a3)
+        for kind, label in (("prefix", "Prefix"), ("suffix", "Suffix"), ("regex", "Regex")):
+            act = QAction(f"New Window as {label}: {text}", self)
+            act.triggered.connect(lambda _, k=kind: self.new_window_from_text(k, text))
+            menu.addAction(act)
         menu.exec_(self.table.viewport().mapToGlobal(pos))
 
 if __name__ == "__main__":
