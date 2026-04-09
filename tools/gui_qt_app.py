@@ -21,6 +21,7 @@ from tools.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
 from tools.curation_index import CuratedIndex
 from tools.word_indexer import WordIndex
 
+TOKEN_DELIMITER = "-"
 BATCHES_DIR = "data/batches"
 LEDGER_PATH = "data/splits-ledger.tsv"
 WORDLIST_PATH = "data/word-index.tsv"
@@ -575,6 +576,7 @@ class MainWindow(QMainWindow):
         """
         find_text = self.find_edit.text()
         replace_text = self.replace_edit.text()
+        normalized_replace = replace_text.replace(" ", TOKEN_DELIMITER)
         if not find_text:
             QMessageBox.warning(self, "Find/Replace", "Please enter text to find.")
             return
@@ -600,7 +602,7 @@ class MainWindow(QMainWindow):
             item = self.table.item(row, 2)
             if item:
                 original_text = item.text()
-                new_text = original_text.replace(find_text, replace_text)
+                new_text = original_text.replace(find_text, normalized_replace)
                 if new_text != original_text:
                     count_replaced += 1
                 item.setText(new_text)
@@ -608,7 +610,7 @@ class MainWindow(QMainWindow):
         if count_replaced > 0:
             self.log_ui_event("REPLACE", {
                 "find": find_text,
-                "replace": replace_text,
+                "replace": normalized_replace,
                 "cells_modified": count_replaced
             })
             QMessageBox.information(self, "Find/Replace", f"Replacement applied to {count_replaced} cell(s).")
@@ -857,6 +859,7 @@ if __name__ == "__main__":
     LEDGER_PATH = os.path.abspath(profile.ledger_path)
     WORDLIST_PATH = os.path.abspath(profile.wordlist_path)
     BATCHES_DIR = os.path.abspath(profile.batches_dir)
+    UI_LOG_PATH = os.path.abspath(profile.ui_log_path)
 
     app = QApplication(sys.argv)
     window = MainWindow()
