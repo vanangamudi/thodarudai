@@ -34,6 +34,7 @@ class PhoneticLineEdit(QLineEdit):
         self.committed = ""
         # Holds the composition in progress as a roman sequence
         self.composition = ""
+        self.trailing = ""
 
     def setUndoRedoEnabled(self, enabled):
         """
@@ -99,30 +100,21 @@ class PhoneticLineEdit(QLineEdit):
             logging.debug("Committed text updated: '%s'", self.committed)
             self.composition = ""
 
+    def _render_composition(self):
+        current_disp = transliterate(self.composition)
+        if self.composition and not any(self.composition.lower().endswith(vt) for vt in PHONETIC_VOWELS.keys()):
+            if not current_disp.endswith("்"):
+                current_disp += "்"
+        return current_disp
+
     def update_display(self):
         """
         Update the QLineEdit display with the transliteration of (committed + composition).
-        In our desired behavior, every consonant is rendered with a pulli by default unless
-        a vowel has been typed. So if the current composition is nonempty and does not end with
-        any vowel (as defined in PHONETIC_VOWELS), we force-add a pulli ("்") to the displayed text.
         """
-        # Get the interactive transliteration of our current (raw) composition.
-        current_disp = transliterate(self.composition)
-        # Check if the current composition is nonempty and does NOT end with a vowel token.
-        incomplete = False
-        if self.composition:
-            # Look for any vowel token that could appear at the end.
-            if not any(self.composition.lower().endswith(vt) for vt in PHONETIC_VOWELS.keys()):
-                incomplete = True
-        # If incomplete, ensure that current_disp ends with a pulli.
-        if incomplete and self.composition:
-            if not current_disp.endswith("்"):
-                current_disp += "்"
-        # The final display is the concatenation of committed (already fixed) plus
-        # the current composition (which may have been adjusted to show pulli).
-        disp = self.committed + current_disp
+        current_disp = self._render_composition()
+        disp = self.committed + current_disp + self.trailing
         self.setText(disp)
-        self.setCursorPosition(len(disp))
+        self.setCursorPosition(len(self.committed + current_disp))
         logging.debug("Display updated: '%s' (committed: '%s', composition: '%s')",
                       disp, self.committed, self.composition)
 
@@ -132,14 +124,32 @@ class PhoneticLineEdit(QLineEdit):
         logging.debug("Key press: key=%s, text='%s', current composition='%s', committed='%s'",
                       key, ch, self.composition, self.committed)
 
-        # Check if the cursor is not at the end or if there is any selected text.
-        if (self.hasSelectedText() or self.cursorPosition() < len(self.text())):
-            super().keyPressEvent(event)
-            new_text = self.text()
-            self.committed = new_text
+        current_text = self.text()
+        cp = self.cursorPosition()
+        # Normalize state to support editing at the caret/selection
+        if self.hasSelectedText():
+            sel_start = self.selectionStart()
+            sel_end = sel_start + len(self.selectedText())
+            self.committed = current_text[:sel_start]
+            self.trailing = current_text[sel_end:]
+            # Selection replaces the boundary → reset composition
             self.composition = ""
-            logging.debug("Default behavior used. New text: '%s'", new_text)
-            return
+        else:
+            expected_cp = len(self.committed + self._render_composition())
+            # If caret sits exactly after the rendered composition and before trailing, keep buffers as-is
+            if cp == expected_cp and current_text.startswith(self.committed + self._render_composition()) and current_text.endswith(self.trailing):
+                pass  # preserve self.committed/self.composition/self.trailing
+            elif cp < len(current_text):
+                # User clicked/moved caret into the middle elsewhere → resync and reset composition
+                self.committed = current_text[:cp]
+                self.trailing = current_text[cp:]
+                self.composition = ""
+            else:
+                # Caret at visual end: absorb stale trailing if any
+                if self.trailing:
+                    self.committed = current_text
+                    self.trailing = ""
+                    self.composition = ""
 
         if key == Qt.Key_Backspace:
             if self.composition:
@@ -155,9 +165,11 @@ class PhoneticLineEdit(QLineEdit):
             if self.composition:
                 self.composition = ""
                 logging.debug("Delete: Cleared composition")
+            elif self.trailing:
+                self.trailing = self.trailing[1:]
+                logging.debug("Delete: Removed first char from trailing, new trailing='%s'", self.trailing)
             else:
-                self.committed = self.committed[:-1]
-                logging.debug("Delete: Removed last char from committed, new committed='%s'", self.committed)
+                pass
             self.update_display()
             event.accept()
             return
@@ -189,23 +201,19 @@ class PhoneticLineEdit(QLineEdit):
             super().keyPressEvent(event)
 
     def insertFromMimeData(self, source):
-        """
-        Handle paste events so that the pasted text replaces the selected text
-        and the internal state is updated accordingly.
-        """
         pasted_text = source.text()
+        current_text = self.text()
         if self.hasSelectedText():
-            cursor_pos = self.cursorPosition()
-            current_text = self.text()
             sel_start = self.selectionStart()
             sel_end = sel_start + len(self.selectedText())
-            new_text = current_text[:sel_start] + pasted_text + current_text[sel_end:]
+            self.committed = current_text[:sel_start] + pasted_text
+            self.trailing = current_text[sel_end:]
         else:
-            new_text = self.text()[:self.cursorPosition()] + pasted_text + self.text()[self.cursorPosition():]
-        self.committed = new_text
+            cp = self.cursorPosition()
+            self.committed = current_text[:cp] + pasted_text
+            self.trailing = current_text[cp:]
         self.composition = ""
-        self.setText(new_text)
-        self.setCursorPosition(sel_start + len(pasted_text) if self.hasSelectedText() else len(new_text))
+        self.update_display()
 
 class MainWindow(QMainWindow):
     def __init__(self, ui_scale=1.5, font_size=None):
