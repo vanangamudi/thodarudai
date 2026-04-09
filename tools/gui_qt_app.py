@@ -3,6 +3,8 @@ import logging
 import time
 import string
 import sys
+import random
+import math
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
@@ -16,6 +18,7 @@ from PyQt5.QtWidgets import (
 
 
 from tools.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
+from tools.curation_index import CuratedIndex
 from tools.word_indexer import WordIndex
 
 BATCHES_DIR = "data/batches"
@@ -206,10 +209,15 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         import os
-        self.batch_dir = BATCHES_DIR
+        import os
+        self.batch_dir = os.path.abspath(BATCHES_DIR)
+        logging.info("Batches directory: %s", self.batch_dir)
         os.makedirs(self.batch_dir, exist_ok=True)
         self.wordlist_path = WORDLIST_PATH
         self.word_index = WordIndex(self.wordlist_path)
+        self.curated = CuratedIndex(self.batch_dir)
+        self.curated.reload()
+        logging.info("Curated index (from batches) loaded: %d word(s)", self.curated.curated_count)
         self.setWindowTitle("Tamil Splits - Qt Client")
         central = QWidget()
         self.setCentralWidget(central)
@@ -274,6 +282,7 @@ class MainWindow(QMainWindow):
         return min_len, max_len
 
     def query_words(self):
+        self.curated.maybe_reload_on_change()
         # Get values from UI fields.
         prefix = self.prefix_edit.text().strip()
         suffix = self.suffix_edit.text().strip()
@@ -285,16 +294,59 @@ class MainWindow(QMainWindow):
 
         self.log_ui_event("QUERY", {"prefix": prefix, "suffix": suffix, "regex": regex, "length_spec": length_spec, "limit": limit})
 
-        results = self.word_index.query_words(
+        # Probe more than limit to have headroom for filtering curated words
+        probe_limit = min(limit * 5, max(limit + 500, 5000))
+        raw = self.word_index.query_words(
             prefix=prefix,
             suffix=suffix,
             min_len=min_len,
             max_len=max_len,
-            limit=limit,
+            limit=probe_limit,
             offset=0,
             regex=regex
         )
-        self.populate_table_from_results(results)
+        # Partition results into new (uncurated) and curated
+        new_rows = []
+        old_rows = []
+        for w, fr, gl in raw:
+            (new_rows if not self.curated.is_curated(w) else old_rows).append((w, fr, gl))
+
+        # Always include ~20% curated, at least 1 if any curated exist
+        curated_ratio = 0.20
+        curated_quota = int(math.floor(limit * curated_ratio))
+        if old_rows and curated_quota < 1:
+            curated_quota = 1
+
+        # Randomly pick curated rows for this query
+        curated_pick = []
+        if old_rows and curated_quota > 0:
+            curated_pick = random.sample(old_rows, k=min(curated_quota, len(old_rows)))
+
+        # Fill remaining with new (front-load new)
+        remaining_slots = max(0, limit - len(curated_pick))
+        new_pick = new_rows[:remaining_slots]
+
+        # If still short, backfill with additional curated (excluding those already picked)
+        leftover = max(0, limit - (len(curated_pick) + len(new_pick)))
+        if leftover > 0:
+            remaining_old = [r for r in old_rows if r not in curated_pick]
+            if remaining_old:
+                curated_pick += random.sample(remaining_old, k=min(leftover, len(remaining_old)))
+
+        # Final order: new first, then curated
+        combined = (new_pick + curated_pick)[:limit]
+
+        shown_new = len(new_pick)
+        shown_curated = len(curated_pick)
+        self.log_ui_event("FILTER_CURATED", {
+            "queried": len(raw),
+            "new": len(new_rows),
+            "curated": len(old_rows),
+            "shown_new": shown_new,
+            "shown_curated": shown_curated,
+            "curated_ratio": curated_ratio
+        })
+        self.populate_table_from_results(combined)
 
     def build_tsv_lines(self):
         """
@@ -343,6 +395,11 @@ class MainWindow(QMainWindow):
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
 
+    def sanitize_component(self, s):
+        import re
+        # Replace path separators, Windows-reserved chars, and whitespace with underscores, trim length
+        return re.sub(r'[\\/:*?"<>|\s]+', '_', s).strip('_')[:64]
+
     def generate_batch_name(self):
        # Compute a default batch name in the format:
        # {timestamp}-{prefix}{min_len}{suffix}.tsv
@@ -353,8 +410,10 @@ class MainWindow(QMainWindow):
        # Remove any characters that might interfere with filenames.
        # safe_prefix = "".join(c for c in prefix if c.isalnum())
        # safe_suffix = "".join(c for c in suffix if c.isalnum())
-       safe_prefix, safe_suffix = prefix, suffix
-       return f"{timestamp}-{safe_prefix}-{length_spec}-{safe_suffix}.tsv"
+       safe_prefix = self.sanitize_component(prefix)
+       safe_suffix = self.sanitize_component(suffix)
+       safe_len = self.sanitize_component(length_spec)
+       return f"{timestamp}-{safe_prefix}-{safe_len}-{safe_suffix}.tsv"
 
     def commit_edits(self):
         # Collect only rows whose 'splits' were edited
@@ -380,12 +439,15 @@ class MainWindow(QMainWindow):
         batch_name = default_batch_name
         tsv_lines = ["\t".join(["id","word","splits","freq","glen","notes"])]
         tsv_lines.extend("\t".join(r) for r in edited_rows)
-        filepath = f"{self.batch_dir}/{batch_name}"
+        import os
+        filepath = os.path.abspath(os.path.join(self.batch_dir, batch_name))
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write("\n".join(tsv_lines) + "\n")
             self.update_ledger(tsv_lines, batch_name)
+            self.curated.update_from_batch(tsv_lines)
             self.log_ui_event("COMMIT", {"batch": batch_name, "saved_rows": len(edited_rows)})
+            logging.info("Saved batch file to %s", filepath)
             QMessageBox.information(self, "Commit", f"Saved {len(edited_rows)} edited row(s) to {filepath}")
         except Exception as e:
             QMessageBox.critical(self, "Commit Error", str(e))
@@ -791,9 +853,10 @@ if __name__ == "__main__":
     parser.add_argument("--base_dir", default=None, help="Optional base directory")
     args = parser.parse_args()
     profile = Profile(name=args.profile, base_dir=args.base_dir)
-    LEDGER_PATH = profile.ledger_path
-    WORDLIST_PATH = profile.wordlist_path
-    BATCHES_DIR = profile.batches_dir
+    import os
+    LEDGER_PATH = os.path.abspath(profile.ledger_path)
+    WORDLIST_PATH = os.path.abspath(profile.wordlist_path)
+    BATCHES_DIR = os.path.abspath(profile.batches_dir)
 
     app = QApplication(sys.argv)
     window = MainWindow()
