@@ -12,6 +12,7 @@ class Profile:
         self.ledger_path = os.path.join(base_dir, name, f"ledger.tsv")
         self.batches_dir = os.path.join(base_dir, name, "batches")
         self.ui_log_path = os.path.join(base_dir, name, "ui-log.tsv")
+        self.reminders_path = os.path.join(base_dir, name, "reminders.tsv")
         os.makedirs(os.path.dirname(self.ui_log_path), exist_ok=True)
         # Ensure the parent directories exist.
         os.makedirs(os.path.dirname(self.wordlist_path), exist_ok=True)

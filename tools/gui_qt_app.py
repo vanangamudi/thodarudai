@@ -26,6 +26,7 @@ BATCHES_DIR = "data/batches"
 LEDGER_PATH = "data/splits-ledger.tsv"
 WORDLIST_PATH = "data/word-index.tsv"
 UI_LOG_PATH = "data/ui-log.tsv"
+REMINDERS_PATH = "data/reminders.tsv"
 class PhoneticLineEdit(QLineEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -207,8 +208,32 @@ class PhoneticLineEdit(QLineEdit):
         self.setCursorPosition(sel_start + len(pasted_text) if self.hasSelectedText() else len(new_text))
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, ui_scale=1.5, font_size=None):
         super().__init__()
+        self.ui_scale = float(ui_scale) if ui_scale else 1.0
+        self.font_size = int(font_size) if font_size else max(14, int(round(15 * self.ui_scale)))
+        btn_h = int(28 * self.ui_scale)
+        le_h = int(26 * self.ui_scale)
+        pad_y = int(6 * self.ui_scale)
+        pad_x = int(12 * self.ui_scale)
+        self.setStyleSheet(
+            f"""
+            QWidget {{ font-size: {self.font_size}pt; }}
+            QPushButton {{
+                font-size: {self.font_size}pt;
+                min-height: {btn_h}px;
+                padding: {pad_y}px {pad_x}px;
+            }}
+            QLineEdit {{
+                font-size: {self.font_size}pt;
+                min-height: {le_h}px;
+            }}
+            QHeaderView::section {{
+                font-size: {self.font_size}pt;
+                padding: {max(4, pad_y-2)}px {max(6, pad_x-6)}px;
+            }}
+            """
+        )
         import os
         import os
         self.batch_dir = os.path.abspath(BATCHES_DIR)
@@ -234,6 +259,9 @@ class MainWindow(QMainWindow):
         self.edited_ids = set()
         self.suppress_item_changed = False
         self.table.itemChanged.connect(self.on_cell_changed)
+        self.reminders = set()
+        self.load_reminders()
+        logging.info("Loaded %d reminder word(s)", len(self.reminders))
         main_layout.addLayout(self.build_find_replace_panel())
 
         # (Query button connected earlier in the params panel.)
@@ -248,6 +276,8 @@ class MainWindow(QMainWindow):
         MyShortcut(QKeySequence("Alt+L"), self, activated=lambda: self.length_edit.setFocus())
         MyShortcut(QKeySequence("Alt+I"), self, activated=lambda: self.limit_spin.setFocus())
         MyShortcut(QKeySequence("Alt+Q"), self, activated=lambda: self.query_btn.setFocus())
+        MyShortcut(QKeySequence("Alt+M"), self, activated=self.toggle_reminder_for_selected)  # toggle reminder on selection
+        MyShortcut(QKeySequence("Alt+B"), self, activated=self.show_reminder_bag)             # show reminder bag
 
     def parse_length_spec(self, length_spec):
         # Parse the length specification.
@@ -547,6 +577,98 @@ class MainWindow(QMainWindow):
                 lf.write(line)
             finally:
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+
+    def load_reminders(self):
+        """Load reminder words from REMINDERS_PATH into self.reminders."""
+        self.reminders = set()
+        try:
+            with open(REMINDERS_PATH, "r", encoding="utf-8") as f:
+                header = f.readline().strip().split("\t")
+                idx = {h: i for i, h in enumerate(header)}
+                if "word" not in idx:
+                    return
+                for ln in f:
+                    if not ln.strip():
+                        continue
+                    cols = ln.rstrip("\n").split("\t")
+                    w = cols[idx["word"]]
+                    if w:
+                        self.reminders.add(w)
+        except FileNotFoundError:
+            pass
+
+    def _write_reminders_file(self):
+        """Rewrite reminders file from self.reminders."""
+        import os, fcntl, time
+        os.makedirs(os.path.dirname(REMINDERS_PATH), exist_ok=True)
+        ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        with open(REMINDERS_PATH, "w", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                f.write("timestamp\tword\tnotes\n")
+                for w in sorted(self.reminders):
+                    f.write(f"{ts}\t{w}\t\n")
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+    def add_to_reminders(self, words):
+        """Add given words to reminders, persist, and log."""
+        new_words = [w for w in words if w and w not in self.reminders]
+        if not new_words:
+            return
+        for w in new_words:
+            self.reminders.add(w)
+        self._write_reminders_file()
+        logging.info("REMINDER_ADD: %d word(s): %s", len(new_words), ", ".join(new_words[:5]))
+        self.log_ui_event("REMINDER_ADD", {"count": len(new_words), "sample": ", ".join(new_words[:5])})
+
+    def remove_from_reminders(self, words):
+        """Remove given words from reminders, persist, and log."""
+        removed = [w for w in words if w in self.reminders]
+        if not removed:
+            return
+        for w in removed:
+            self.reminders.discard(w)
+        self._write_reminders_file()
+        logging.info("REMINDER_REMOVE: %d word(s): %s", len(removed), ", ".join(removed[:5]))
+        self.log_ui_event("REMINDER_REMOVE", {"count": len(removed), "sample": ", ".join(removed[:5])})
+
+    def toggle_reminder_for_selected(self):
+        """Toggle reminder status for selected rows; logs to console and UI log."""
+        # Collect unique words from selected rows
+        rows = {ix.row() for ix in self.table.selectedIndexes()}
+        words = []
+        for r in rows:
+            it = self.table.item(r, 1)  # word column
+            if it:
+                words.append(it.text())
+        if not words:
+            logging.info("REMINDER_TOGGLE: no selection")
+            return
+
+        to_add = [w for w in words if w not in self.reminders]
+        to_remove = [w for w in words if w in self.reminders]
+        if to_add:
+            self.add_to_reminders(to_add)
+        if to_remove:
+            self.remove_from_reminders(to_remove)
+        logging.info("REMINDER_TOGGLE: added=%d removed=%d", len(to_add), len(to_remove))
+
+    def show_reminder_bag(self):
+        """Populate the table with all reminder words found in the index; logs to console and UI log."""
+        if not self.reminders:
+            logging.info("REMINDER_SHOW: empty")
+            self.log_ui_event("REMINDER_SHOW", {"count": 0})
+            return
+        # Build results as (word, freq, glen) for all reminders present in the index
+        index_map = {w: (w, fr, gl) for (w, fr, gl) in self.word_index.words}
+        results = []
+        for w in sorted(self.reminders):
+            if w in index_map:
+                results.append(index_map[w])
+        logging.info("REMINDER_SHOW: %d word(s)", len(results))
+        self.log_ui_event("REMINDER_SHOW", {"count": len(results)})
+        self.populate_table_from_results(results)
     def refresh_phonetic_fields(self):
         for field in (self.prefix_edit, self.suffix_edit, self.regex_edit):
             field.update_display()
@@ -748,7 +870,7 @@ class MainWindow(QMainWindow):
         self.limit_spin = QSpinBox()
         self.limit_spin.setMinimum(1)
         self.limit_spin.setMaximum(10000)
-        self.limit_spin.setValue(500)
+        self.limit_spin.setValue(10)
         self.phonetic_cb = QCheckBox("Phonetic Input")
         self.phonetic_cb.setChecked(True)
         self.phonetic_cb.toggled.connect(self.refresh_phonetic_fields)
@@ -806,6 +928,8 @@ class MainWindow(QMainWindow):
         from PyQt5.QtWidgets import QHeaderView
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(int(28 * self.ui_scale))
+        self.table.horizontalHeader().setMinimumHeight(int(30 * self.ui_scale))
         self.table.setColumnHidden(0, False)  # ensure 'id' is visible
         self.table.setColumnWidth(0, 120)
         self.table.cellClicked.connect(self.prefill_find_field)
@@ -853,6 +977,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tamil Splits GUI Client")
     parser.add_argument("--profile", default="default", help="Profile name")
     parser.add_argument("--base_dir", default=None, help="Optional base directory")
+    parser.add_argument("--ui_scale", type=float, default=1.0, help="UI scale multiplier for fonts and sizes (e.g., 1.25)")
+    parser.add_argument("--font_size", type=int, default=None, help="Base font size in points (overrides ui_scale-derived size)")
     args = parser.parse_args()
     profile = Profile(name=args.profile, base_dir=args.base_dir)
     import os
@@ -860,9 +986,15 @@ if __name__ == "__main__":
     WORDLIST_PATH = os.path.abspath(profile.wordlist_path)
     BATCHES_DIR = os.path.abspath(profile.batches_dir)
     UI_LOG_PATH = os.path.abspath(profile.ui_log_path)
+    REMINDERS_PATH = os.path.abspath(profile.reminders_path)
 
     app = QApplication(sys.argv)
-    window = MainWindow()
+    from PyQt5.QtGui import QFont
+    if args.font_size:
+        f = app.font()
+        f.setPointSize(int(args.font_size))
+        app.setFont(f)
+    window = MainWindow(ui_scale=args.ui_scale, font_size=args.font_size)
     window.resize(1024, 600)
     window.show()
     sys.exit(app.exec_())
