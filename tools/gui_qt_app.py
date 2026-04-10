@@ -473,9 +473,23 @@ class MainWindow(QMainWindow):
 
         # Always include ~X% curated (GUI-controlled), at least 1 if any curated exist
         curated_ratio = float(self.curated_ratio_spin.value()) / 100.0
+        if curated_ratio <= 0.0:
+            combined = new_rows[:limit]
+            shown_new = len(combined)
+            shown_curated = 0
+            self.log_ui_event("FILTER_CURATED", {
+                "queried": len(raw),
+                "new": len(new_rows),
+                "curated": len(old_rows),
+                "shown_new": shown_new,
+                "shown_curated": shown_curated,
+                "curated_ratio": curated_ratio
+            })
+            self.populate_table_from_results(combined)
+            self.update_summary()
+            return
         curated_quota = int(math.floor(limit * curated_ratio))
-        if old_rows and curated_quota < 1:
-            curated_quota = 1
+        # Do not force a minimum when ratio is zero; small non-zero ratios may still round to 0.
 
         # Randomly pick curated rows for this query
         curated_pick = []
