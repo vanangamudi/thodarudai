@@ -43,10 +43,14 @@ class CuratedIndex:
         self.bloom = BloomFilter(1, error_rate=self.error_rate)
         self.curated_count = 0
         self._last_mtime = 0.0
+        self.curated_words = set()
+        self.curation_counts = {}
+        self.total_curation_entries = 0
 
     def reload(self):
         words = set()
         max_mtime = 0.0
+        counts = {}
         try:
             if not os.path.isdir(self.batches_dir):
                 self.bloom = BloomFilter(1, error_rate=self.error_rate)
@@ -73,6 +77,7 @@ class CuratedIndex:
                             s = cols[idx["splits"]]
                             if w and s:
                                 words.add(w)
+                                counts[w] = counts.get(w, 0) + 1
                 except (OSError, UnicodeDecodeError):
                     continue
         except Exception:
@@ -85,6 +90,9 @@ class CuratedIndex:
         self.curated_count = len(words)
         # Track the latest observed mtime across batch files
         self._last_mtime = max_mtime
+        self.curated_words = words
+        self.curation_counts = counts
+        self.total_curation_entries = sum(counts.values())
 
     def is_curated(self, word):
         return word in self.bloom
@@ -126,5 +134,8 @@ class CuratedIndex:
             if s:
                 self.bloom.add(w)
                 added += 1
+                self.curated_words.add(w)
+                self.curation_counts[w] = self.curation_counts.get(w, 0) + 1
         self.curated_count += added
         self._last_mtime = time.time()
+        self.total_curation_entries = sum(self.curation_counts.values())

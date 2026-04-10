@@ -5,6 +5,9 @@ import string
 import sys
 import random
 import math
+import os
+import weakref
+from collections import Counter
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
@@ -14,13 +17,28 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QLabel, QPushButton, QSpinBox, QCheckBox, QTableWidget,
     QTableWidgetItem, QMessageBox, QAbstractItemView, QMenu, QAction,
-    QInputDialog, QStyledItemDelegate, QShortcut as MyShortcut
+    QInputDialog, QStyledItemDelegate, QSplitter, QShortcut as MyShortcut
 )
 
 
 from tools.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
 from tools.curation_index import CuratedIndex
 from tools.word_indexer import WordIndex
+
+CURATED_INDEX_CACHE = {}
+def get_shared_curated_index(batches_dir):
+    key = os.path.abspath(batches_dir)
+    idx = CURATED_INDEX_CACHE.get(key)
+    if idx is None:
+        idx = CuratedIndex(batches_dir)
+        idx.reload()
+        CURATED_INDEX_CACHE[key] = idx
+        logging.info("Loaded CuratedIndex once: %s", key)
+    else:
+        logging.info("Reusing shared CuratedIndex: %s", key)
+    return idx
+
+WINDOWS = weakref.WeakSet()
 
 # Shared WordIndex cache keyed by absolute wordlist path
 WORD_INDEX_CACHE = {}
@@ -314,8 +332,7 @@ class MainWindow(QMainWindow):
         os.makedirs(self.batch_dir, exist_ok=True)
         self.wordlist_path = WORDLIST_PATH
         self.word_index = get_shared_word_index(self.wordlist_path)
-        self.curated = CuratedIndex(self.batch_dir)
-        self.curated.reload()
+        self.curated = get_shared_curated_index(self.batch_dir)
         logging.info("Curated index (from batches) loaded: %d word(s)", self.curated.curated_count)
         self.setWindowTitle("Tamil Splits - Qt Client")
         central = QWidget()
@@ -323,20 +340,31 @@ class MainWindow(QMainWindow):
         # Main vertical layout
         main_layout = QVBoxLayout(central)
 
-        # Build and add individual panels:
-        main_layout.addLayout(self.build_prefix_suffix_regex_panel())
-        main_layout.addLayout(self.build_query_parameters_panel())
-        main_layout.addLayout(self.build_sort_panel())
-        main_layout.addWidget(self.build_table_panel())
-        self.original_splits = {}
-        self.edited_ids = set()
-        self.suppress_item_changed = False
-        self.table.itemChanged.connect(self.on_cell_changed)
-        self.dirty = False
+        # Left container: all existing controls + table + find/replace
+        left_container = QWidget()
+        left_layout = QVBoxLayout(left_container)
+        left_layout.addLayout(self.build_prefix_suffix_regex_panel())
+        left_layout.addLayout(self.build_query_parameters_panel())
+        left_layout.addLayout(self.build_sort_panel())
+        left_layout.addWidget(self.build_table_panel())
+        left_layout.addLayout(self.build_find_replace_panel())
+
+        # Right: summary panel
+        self.summary_widget = self.build_summary_panel()
+
+        # Splitter to keep summary narrow
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(left_container)
+        splitter.addWidget(self.summary_widget)
+        splitter.setStretchFactor(0, 4)  # main content gets more space
+        splitter.setStretchFactor(1, 1)  # summary stays narrower
+
+        main_layout.addWidget(splitter)
+        self.update_summary()
+        WINDOWS.add(self)
         self.reminders = set()
         self.load_reminders()
         logging.info("Loaded %d reminder word(s)", len(self.reminders))
-        main_layout.addLayout(self.build_find_replace_panel())
 
         # (Query button connected earlier in the params panel.)
         from PyQt5.QtGui import QKeySequence
@@ -443,8 +471,8 @@ class MainWindow(QMainWindow):
                 continue
             (new_rows if not self.curated.is_curated(w) else old_rows).append((w, fr, gl))
 
-        # Always include ~20% curated, at least 1 if any curated exist
-        curated_ratio = 0.20
+        # Always include ~X% curated (GUI-controlled), at least 1 if any curated exist
+        curated_ratio = float(self.curated_ratio_spin.value()) / 100.0
         curated_quota = int(math.floor(limit * curated_ratio))
         if old_rows and curated_quota < 1:
             curated_quota = 1
@@ -479,6 +507,7 @@ class MainWindow(QMainWindow):
             "curated_ratio": curated_ratio
         })
         self.populate_table_from_results(combined)
+        self.update_summary()
 
     def build_tsv_lines(self):
         """
@@ -523,6 +552,59 @@ class MainWindow(QMainWindow):
                     splits = cols[2].strip()
                     notes = cols[5].strip() if len(cols) > 5 else ""
                     lf.write(f"{ts}\t{batch_name}\t{rec_id or word}\t{word}\t{splits}\t{notes}\n")
+            finally:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+
+    def append_summary_ledger(self, batch_name):
+        """
+        Append a compact summary row to the ledger:
+          id="__SUMMARY__", word=<total_words>,
+          splits="curated=<n_cur>;remaining=<n_rem>;entries=<n_entries>",
+          notes="len:{glen}:{cur}/{rem},..."
+        """
+        import os, fcntl, time
+        from collections import Counter
+        glen_map = {}
+        index_words = set()
+        for w, fr, gl in self.word_index.words:
+            index_words.add(w)
+            glen_map[w] = gl
+        total_words = len(index_words)
+        curated_set = getattr(self.curated, "curated_words", set())
+        curated_in_index = {w for w in curated_set if w in index_words}
+        remaining_set = index_words - curated_in_index
+        total_curations = getattr(self.curated, "total_curation_entries", 0)
+        curated_len = Counter(glen_map[w] for w in curated_in_index if w in glen_map)
+        remaining_len = Counter(glen_map[w] for w in remaining_set if w in glen_map)
+        lens = sorted(set(curated_len.keys()) | set(remaining_len.keys()))
+        lens_notes = ",".join(f"{gl}:{curated_len.get(gl,0)}/{remaining_len.get(gl,0)}" for gl in lens)
+        ledger_path = LEDGER_PATH
+        os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
+        write_header = not os.path.exists(ledger_path) or os.path.getsize(ledger_path) == 0
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with open(ledger_path, "a", encoding="utf-8") as lf:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            try:
+                if write_header:
+                    lf.write("\t".join(["timestamp", "batch", "id", "word", "splits", "notes"]) + "\n")
+                import json
+                curated_len = Counter(glen_map[w] for w in curated_in_index if w in glen_map)
+                remaining_len = Counter(glen_map[w] for w in remaining_set if w in glen_map)
+                summary = {
+                    "total_words": total_words,
+                    "curated_distinct": len(curated_in_index),
+                    "remaining_distinct": len(remaining_set),
+                    "curation_entries": total_curations,
+                    "length_distribution": {
+                        "curated": dict(curated_len),
+                        "remaining": dict(remaining_len)
+                    }
+                }
+                rec_id = "__SUMMARY__"
+                word = str(total_words)
+                splits = ""
+                notes = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+                lf.write(f"{ts}\t{batch_name}\t{rec_id}\t{word}\t{splits}\t{notes}\n")
             finally:
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
@@ -581,9 +663,19 @@ class MainWindow(QMainWindow):
                 f.write("\n".join(tsv_lines) + "\n")
             self.update_ledger(tsv_lines, batch_name)
             self.curated.update_from_batch(tsv_lines)
+            # Ensure curated index reflects any on-disk state (paranoid correctness)
+            self.curated.reload()
+            # Append one-line summary into the ledger for this batch
+            self.append_summary_ledger(batch_name)
             self.log_ui_event("COMMIT", {"batch": batch_name, "saved_rows": len(edited_rows)})
             logging.info("Saved batch file to %s", filepath)
             QMessageBox.information(self, "Commit", f"Saved {len(edited_rows)} edited row(s) to {filepath}")
+            # Refresh summary in all open windows (shared curated index updated)
+            for win in list(WINDOWS):
+                try:
+                    win.update_summary()
+                except Exception:
+                    pass
             # Update baseline to prevent re-saving unchanged rows
             edited_ids_set = set()
             for rec_id, word, new_splits, freq, glen, notes in edited_rows:
@@ -604,6 +696,7 @@ class MainWindow(QMainWindow):
                         self.edited_ids.remove(rid)
             # Reset dirty flag
             self.dirty = bool(self.edited_ids)
+            self.update_summary()
         except Exception as e:
             QMessageBox.critical(self, "Commit Error", str(e))
 
@@ -632,6 +725,7 @@ class MainWindow(QMainWindow):
                 self.table.setItem(row, col, new_item)
         self.table.resizeColumnsToContents()
         self.suppress_item_changed = False
+        self.dirty = False  # ADD: nothing is edited immediately after a fresh populate
         self.dirty = False
 
 
@@ -1016,6 +1110,10 @@ class MainWindow(QMainWindow):
         self.phonetic_cb = QCheckBox("Phonetic Input")
         self.phonetic_cb.setChecked(True)
         self.phonetic_cb.toggled.connect(self.refresh_phonetic_fields)
+        self.curated_ratio_spin = QSpinBox()
+        self.curated_ratio_spin.setMinimum(0)
+        self.curated_ratio_spin.setMaximum(100)
+        self.curated_ratio_spin.setValue(20)  # default 20%
         self.query_btn = QPushButton("Query")
         self.query_btn.clicked.connect(self.query_words)
         params_row.addWidget(QLabel("Length:"))
@@ -1023,6 +1121,9 @@ class MainWindow(QMainWindow):
         params_row.addWidget(QLabel("Limit:"))
         params_row.addWidget(self.limit_spin)
         params_row.addWidget(self.phonetic_cb)
+        params_row.addWidget(QLabel("Curated %:"))
+        params_row.addWidget(self.curated_ratio_spin)
+        params_row.addWidget(self.query_btn)
         params_row.addWidget(self.query_btn)
 
         new_win_btn = QPushButton("New Window")
@@ -1091,7 +1192,40 @@ class MainWindow(QMainWindow):
         self.table.cellClicked.connect(self.prefill_find_field)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.on_table_context_menu)
+        self.table.itemChanged.connect(self.on_cell_changed)  # ADD: track edits
         return self.table
+
+    def build_summary_panel(self):
+        panel = QWidget()
+        v = QVBoxLayout(panel)
+
+        # Headline
+        title = QLabel("Summary")
+        title.setStyleSheet("font-weight: bold;")
+        v.addWidget(title)
+
+        # Stats labels
+        self.sum_total_words = QLabel("Total words: 0")
+        self.sum_curated_words = QLabel("Curated (distinct): 0")
+        self.sum_remaining_words = QLabel("Remaining (distinct): 0")
+        self.sum_total_curations = QLabel("Curation entries: 0")
+
+        v.addWidget(self.sum_total_words)
+        v.addWidget(self.sum_curated_words)
+        v.addWidget(self.sum_remaining_words)
+        v.addWidget(self.sum_total_curations)
+
+        # Length distribution table: glen | curated | remaining
+        self.len_table = QTableWidget(0, 3)
+        self.len_table.setHorizontalHeaderLabels(["glen", "curated", "remaining"])
+        from PyQt5.QtWidgets import QHeaderView
+        self.len_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.len_table.verticalHeader().setVisible(False)
+        v.addWidget(QLabel("Length distribution"))
+        v.addWidget(self.len_table)
+
+        v.addStretch()
+        return panel
 
     def prefill_find_field(self, row, col):
         # Only act if the clicked column is the splits column (index 2).
@@ -1141,6 +1275,7 @@ class MainWindow(QMainWindow):
             "regex_not": self.regex_not_edit.text().strip() if hasattr(self, "regex_not_edit") else "",
             "length_spec": self.length_edit.text().strip(),
             "limit": int(self.limit_spin.value()),
+            "curated_ratio": int(self.curated_ratio_spin.value()),
         }
 
     def _apply_query_params(self, p):
@@ -1155,6 +1290,7 @@ class MainWindow(QMainWindow):
             self.regex_not_edit.set_text_tamil(p.get("regex_not", ""))
         self.length_edit.setText(p.get("length_spec", ""))
         self.limit_spin.setValue(int(p.get("limit", self.limit_spin.value())))
+        self.curated_ratio_spin.setValue(int(p.get("curated_ratio", self.curated_ratio_spin.value())))
 
     def open_new_window_with_current_query(self):
         """Spawn a new window, clone current query params, run, and show."""
@@ -1260,6 +1396,54 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda _, k=kind: self.new_window_from_text(k, text))
             menu.addAction(act)
         menu.exec_(self.table.viewport().mapToGlobal(pos))
+
+    def update_summary(self):
+        # Build a mapping: word -> glen from the index
+        glen_map = {}
+        index_words = set()
+        for w, fr, gl in self.word_index.words:
+            index_words.add(w)
+            glen_map[w] = gl
+
+        total_words = len(index_words)
+
+        # Use curated index sets; restrict to words present in index
+        curated_set = getattr(self.curated, "curated_words", set())
+        curated_in_index = {w for w in curated_set if w in index_words}
+        curated_distinct = len(curated_in_index)
+
+        remaining_set = index_words - curated_in_index
+        remaining_distinct = len(remaining_set)
+
+        total_curations = getattr(self.curated, "total_curation_entries", 0)
+
+        # Update labels
+        self.sum_total_words.setText(f"Total words: {total_words}")
+        self.sum_curated_words.setText(f"Curated (distinct): {curated_distinct}")
+        self.sum_remaining_words.setText(f"Remaining (distinct): {remaining_distinct}")
+        self.sum_total_curations.setText(f"Curation entries: {total_curations}")
+
+        # Length distributions
+        curated_len = Counter()
+        for w in curated_in_index:
+            gl = glen_map.get(w)
+            if gl is not None:
+                curated_len[gl] += 1
+
+        remaining_len = Counter()
+        for w in remaining_set:
+            gl = glen_map.get(w)
+            if gl is not None:
+                remaining_len[gl] += 1
+
+        lengths = sorted(set(curated_len.keys()) | set(remaining_len.keys()))
+        self.len_table.setRowCount(0)
+        for gl in lengths:
+            row = self.len_table.rowCount()
+            self.len_table.insertRow(row)
+            self.len_table.setItem(row, 0, QTableWidgetItem(str(gl)))
+            self.len_table.setItem(row, 1, QTableWidgetItem(str(curated_len.get(gl, 0))))
+            self.len_table.setItem(row, 2, QTableWidgetItem(str(remaining_len.get(gl, 0))))
 
 if __name__ == "__main__":
     import argparse, os
