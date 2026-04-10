@@ -330,7 +330,13 @@ class MainWindow(QMainWindow):
         return splitter
 
     def _init_paths_and_indexes(self):
-        self._init_paths_and_indexes()
+        self.batch_dir = os.path.abspath(BATCHES_DIR)
+        logging.info("Batches directory: %s", self.batch_dir)
+        os.makedirs(self.batch_dir, exist_ok=True)
+        self.wordlist_path = WORDLIST_PATH
+        self.word_index = get_shared_word_index(self.wordlist_path)
+        self.curated = get_shared_curated_index(self.batch_dir)
+        logging.info("Curated index (from batches) loaded: %d word(s)", self.curated.curated_count)
 
     def _init_shortcuts(self):
         from PyQt5.QtGui import QKeySequence
@@ -354,14 +360,7 @@ class MainWindow(QMainWindow):
         self.ui_scale = float(ui_scale) if ui_scale else 1.0
         self.font_size = int(font_size) if font_size else max(14, int(round(15 * self.ui_scale)))
         self._apply_global_styles()
-        import os
-        self.batch_dir = os.path.abspath(BATCHES_DIR)
-        logging.info("Batches directory: %s", self.batch_dir)
-        os.makedirs(self.batch_dir, exist_ok=True)
-        self.wordlist_path = WORDLIST_PATH
-        self.word_index = get_shared_word_index(self.wordlist_path)
-        self.curated = get_shared_curated_index(self.batch_dir)
-        logging.info("Curated index (from batches) loaded: %d word(s)", self.curated.curated_count)
+        self._init_paths_and_indexes()
         self.setWindowTitle("Tamil Splits - Qt Client")
         central = QWidget()
         self.setCentralWidget(central)
@@ -1037,49 +1036,49 @@ class MainWindow(QMainWindow):
         find_layout.addWidget(self.apply_replace_btn)
         return find_layout
 
-    def build_prefix_suffix_regex_panel(self):
-        """
-        Returns a QVBoxLayout containing three rows:
-           - one for Prefix,
-           - one for Suffix,
-           - one for Regex.
-        """
-        panel = QVBoxLayout()
-        # Row for Prefix:
-        prefix_row = QHBoxLayout()
+    def _build_prefix_row(self):
+        row = QHBoxLayout()
         self.prefix_edit = PhoneticLineEdit(self)
         self.prefix_edit.setUndoRedoEnabled(True)
-        prefix_row.addWidget(QLabel("Prefix:"))
-        prefix_row.addWidget(self.prefix_edit)
-        prefix_row.addWidget(QLabel("Exclude:"))
+        row.addWidget(QLabel("Prefix:"))
+        row.addWidget(self.prefix_edit)
+        row.addWidget(QLabel("Exclude:"))
         self.prefix_not_edit = PhoneticLineEdit(self)
         self.prefix_not_edit.setUndoRedoEnabled(True)
-        prefix_row.addWidget(self.prefix_not_edit)
-        panel.addLayout(prefix_row)
-        # Row for Suffix:
-        suffix_row = QHBoxLayout()
+        row.addWidget(self.prefix_not_edit)
+        return row
+
+    def _build_suffix_row(self):
+        row = QHBoxLayout()
         self.suffix_edit = PhoneticLineEdit(self)
         self.suffix_edit.setUndoRedoEnabled(True)
-        suffix_row.addWidget(QLabel("Suffix:"))
-        suffix_row.addWidget(self.suffix_edit)
-        suffix_row.addWidget(QLabel("Exclude:"))
+        row.addWidget(QLabel("Suffix:"))
+        row.addWidget(self.suffix_edit)
+        row.addWidget(QLabel("Exclude:"))
         self.suffix_not_edit = PhoneticLineEdit(self)
         self.suffix_not_edit.setUndoRedoEnabled(True)
-        suffix_row.addWidget(self.suffix_not_edit)
-        panel.addLayout(suffix_row)
-        # Row for Regex:
-        regex_row = QHBoxLayout()
+        row.addWidget(self.suffix_not_edit)
+        return row
+
+    def _build_regex_row(self):
+        row = QHBoxLayout()
         self.regex_edit = PhoneticLineEdit(self)
         self.regex_edit.setPlaceholderText("Regex (optional)")
         self.regex_edit.setUndoRedoEnabled(True)
-        regex_row.addWidget(QLabel("Regex:"))
-        regex_row.addWidget(self.regex_edit)
-        regex_row.addWidget(QLabel("Exclude:"))
+        row.addWidget(QLabel("Regex:"))
+        row.addWidget(self.regex_edit)
+        row.addWidget(QLabel("Exclude:"))
         self.regex_not_edit = PhoneticLineEdit(self)
         self.regex_not_edit.setPlaceholderText("Regex exclude")
         self.regex_not_edit.setUndoRedoEnabled(True)
-        regex_row.addWidget(self.regex_not_edit)
-        panel.addLayout(regex_row)
+        row.addWidget(self.regex_not_edit)
+        return row
+
+    def build_prefix_suffix_regex_panel(self):
+        panel = QVBoxLayout()
+        panel.addLayout(self._build_prefix_row())
+        panel.addLayout(self._build_suffix_row())
+        panel.addLayout(self._build_regex_row())
         return panel
 
     def _add_new_window_buttons(self, row_layout):
@@ -1127,7 +1126,6 @@ class MainWindow(QMainWindow):
         params_row.addWidget(self.phonetic_cb)
         params_row.addWidget(QLabel("Curated %:"))
         params_row.addWidget(self.curated_ratio_spin)
-        params_row.addWidget(self.query_btn)
         params_row.addWidget(self.query_btn)
     
         self._add_new_window_buttons(params_row)

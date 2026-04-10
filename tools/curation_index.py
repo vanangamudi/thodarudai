@@ -47,52 +47,76 @@ class CuratedIndex:
         self.curation_counts = {}
         self.total_curation_entries = 0
 
-    def reload(self):
-        words = set()
+    def _iter_batch_paths(self):
         max_mtime = 0.0
-        counts = {}
-        try:
-            if not os.path.isdir(self.batches_dir):
-                self.bloom = BloomFilter(1, error_rate=self.error_rate)
-                self.curated_count = 0
-                self._last_mtime = 0.0
-                return
-            for name in os.listdir(self.batches_dir):
-                if not name.lower().endswith(".tsv"):
-                    continue
-                path = os.path.join(self.batches_dir, name)
-                try:
-                    st = os.stat(path)
-                    max_mtime = max(max_mtime, st.st_mtime)
-                    with open(path, "r", encoding="utf-8") as f:
-                        header = f.readline().strip().split("\t")
-                        idx = {h: i for i, h in enumerate(header)}
-                        if not {"word", "splits"}.issubset(idx):
-                            continue
-                        for ln in f:
-                            if not ln.strip():
-                                continue
-                            cols = ln.rstrip("\n").split("\t")
-                            w = cols[idx["word"]]
-                            s = cols[idx["splits"]]
-                            if w and s:
-                                words.add(w)
-                                counts[w] = counts.get(w, 0) + 1
-                except (OSError, UnicodeDecodeError):
-                    continue
-        except Exception:
-            words = set()
+        if not os.path.isdir(self.batches_dir):
+            return [], 0.0
+        paths = []
+        for name in os.listdir(self.batches_dir):
+            if not name.lower().endswith(".tsv"):
+                continue
+            path = os.path.join(self.batches_dir, name)
+            try:
+                st = os.stat(path)
+                max_mtime = max(max_mtime, st.st_mtime)
+                paths.append(path)
+            except OSError:
+                continue
+        return paths, max_mtime
 
+    def _accumulate_from_file(self, path, words, counts):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                header = f.readline().strip().split("\t")
+                idx = {h: i for i, h in enumerate(header)}
+                if not {"word", "splits"}.issubset(idx):
+                    return
+                for ln in f:
+                    if not ln.strip():
+                        continue
+                    cols = ln.rstrip("\n").split("\t")
+                    w = cols[idx["word"]]
+                    s = cols[idx["splits"]]
+                    if w and s:
+                        words.add(w)
+                        counts[w] = counts.get(w, 0) + 1
+        except (OSError, UnicodeDecodeError):
+            return
+
+    def _rebuild_bloom(self, words, counts, max_mtime):
         cap = max(1000, int(len(words) * 1.3) or 1)
         self.bloom = BloomFilter(capacity=cap, error_rate=self.error_rate)
         for w in words:
             self.bloom.add(w)
         self.curated_count = len(words)
-        # Track the latest observed mtime across batch files
         self._last_mtime = max_mtime
         self.curated_words = words
         self.curation_counts = counts
         self.total_curation_entries = sum(counts.values())
+
+    def reload(self):
+        words = set()
+        counts = {}
+        try:
+            paths, max_mtime = self._iter_batch_paths()
+            if not paths:
+                self.bloom = BloomFilter(1, error_rate=self.error_rate)
+                self.curated_count = 0
+                self._last_mtime = 0.0
+                self.curated_words = set()
+                self.curation_counts = {}
+                self.total_curation_entries = 0
+                return
+            for path in paths:
+                self._accumulate_from_file(path, words, counts)
+            self._rebuild_bloom(words, counts, max_mtime)
+        except Exception:
+            self.bloom = BloomFilter(1, error_rate=self.error_rate)
+            self.curated_count = 0
+            self._last_mtime = 0.0
+            self.curated_words = set()
+            self.curation_counts = {}
+            self.total_curation_entries = 0
 
     def is_curated(self, word):
         return word in self.bloom

@@ -95,7 +95,7 @@ def analyze_file(path: str) -> List[Dict[str, Any]]:
     v.visit(tree)
     return v.records
 
-def main():
+def build_arg_parser():
     ap = argparse.ArgumentParser(description="Report function/method lengths for refactoring.")
     ap.add_argument("paths", nargs="*", default=["."], help="Files or directories to scan (default: current dir)")
     ap.add_argument("--min", type=int, default=0, dest="min_len", help="Only show functions with length >= MIN")
@@ -104,6 +104,24 @@ def main():
     ap.add_argument("--json", action="store_true", help="Output JSON")
     ap.add_argument("--sort", choices=["length","name","file"], default="length", help="Sort key (default: length)")
     ap.add_argument("--reverse", action="store_true", help="Reverse sort order (default: longest first when sort=length)")
+    return ap
+
+def print_records(all_recs, args):
+    if args.json:
+        print(json.dumps(all_recs, ensure_ascii=False, indent=2))
+        return
+    if args.by_file:
+        from itertools import groupby
+        for file_path, group in groupby(all_recs, key=lambda r: r["file"]):
+            print(f"\n* ={file_path}=")
+            for r in group:
+                print(f"|{r['length']:5d} | {r['lineno']:5d}-{r['end_lineno']:5d} |  ~{r['qualname']}~ |")
+    else:
+        for r in all_recs:
+            print(f"| {r['length']:5d} | {r['file']}:{r['lineno']:d}-{r['end_lineno']:d}|  ~{r['qualname']}~ |")
+
+def main():
+    ap = build_arg_parser()
     args = ap.parse_args()
 
     files = iter_py_files(args.paths)
@@ -127,20 +145,7 @@ def main():
     if args.top and args.top > 0:
         all_recs = all_recs[:args.top]
 
-    if args.json:
-        print(json.dumps(all_recs, ensure_ascii=False, indent=2))
-        return
-
-    # Text output
-    if args.by_file:
-        from itertools import groupby
-        for file_path, group in groupby(all_recs, key=lambda r: r["file"]):
-            print(f"\n* ={file_path}=")
-            for r in group:
-                print(f"|{r['length']:5d} | {r['lineno']:5d}-{r['end_lineno']:5d} |  ~{r['qualname']}~ |")
-    else:
-        for r in all_recs:
-            print(f"| {r['length']:5d} | {r['file']}:{r['lineno']:d}-{r['end_lineno']:d}|  ~{r['qualname']}~ |")
+    print_records(all_recs, args)
 
 if __name__ == "__main__":
     main()
