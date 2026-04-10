@@ -264,6 +264,14 @@ class TableCellLineEdit(QLineEdit):
                     act = QAction(f"New Window as {label}: {text}", self)
                     act.triggered.connect(lambda _, k=kind, t=text: win.new_window_from_text(k, t))
                     menu.addAction(act)
+                menu.addSeparator()
+                if hasattr(win, "new_window_from_text"):
+                    for kind, label in (("not_prefix", "Exclude Prefix"),
+                                        ("not_suffix", "Exclude Suffix"),
+                                        ("not_regex", "Exclude Regex")):
+                        act = QAction(f"New Window as {label}: {text}", self)
+                        act.triggered.connect(lambda _, k=kind, t=text: win.new_window_from_text(k, t))
+                        menu.addAction(act)
         menu.exec_(event.globalPos())
 
 class TableEditDelegate(QStyledItemDelegate):
@@ -393,10 +401,24 @@ class MainWindow(QMainWindow):
         regex = self.regex_edit.text().strip()
         length_spec = self.length_edit.text().strip()  # new length specification field
         limit = self.limit_spin.value()
+        prefix_not = self.prefix_not_edit.text().strip() if hasattr(self, "prefix_not_edit") else ""
+        suffix_not = self.suffix_not_edit.text().strip() if hasattr(self, "suffix_not_edit") else ""
+        regex_not = self.regex_not_edit.text().strip() if hasattr(self, "regex_not_edit") else ""
+        neg_rx = None
+        if regex_not:
+            try:
+                import re
+                neg_rx = re.compile(regex_not)
+            except re.error:
+                neg_rx = None
 
         min_len, max_len = self.parse_length_spec(length_spec)
 
-        self.log_ui_event("QUERY", {"prefix": prefix, "suffix": suffix, "regex": regex, "length_spec": length_spec, "limit": limit})
+        self.log_ui_event("QUERY", {
+            "prefix": prefix, "suffix": suffix, "regex": regex,
+            "prefix_not": prefix_not, "suffix_not": suffix_not, "regex_not": regex_not,
+            "length_spec": length_spec, "limit": limit
+        })
 
         # Probe more than limit to have headroom for filtering curated words
         probe_limit = min(limit * 5, max(limit + 500, 5000))
@@ -413,6 +435,11 @@ class MainWindow(QMainWindow):
         new_rows = []
         old_rows = []
         for w, fr, gl in raw:
+            # Negative filters: exclude if any negative condition matches
+            if (prefix_not and w.startswith(prefix_not)) or \
+               (suffix_not and w.endswith(suffix_not)) or \
+               (neg_rx and neg_rx.search(w)):
+                continue
             (new_rows if not self.curated.is_curated(w) else old_rows).append((w, fr, gl))
 
         # Always include ~20% curated, at least 1 if any curated exist
@@ -743,8 +770,12 @@ class MainWindow(QMainWindow):
         self.log_ui_event("REMINDER_SHOW", {"count": len(results)})
         self.populate_table_from_results(results)
     def refresh_phonetic_fields(self):
-        for field in (self.prefix_edit, self.suffix_edit, self.regex_edit):
-            field.update_display()
+        for field in (self.prefix_edit, self.suffix_edit, self.regex_edit,
+                      getattr(self, "prefix_not_edit", None),
+                      getattr(self, "suffix_not_edit", None),
+                      getattr(self, "regex_not_edit", None)):
+            if field:
+                field.update_display()
 
     def populate_table(self, data_lines):
         self.table.setRowCount(0)
@@ -909,6 +940,10 @@ class MainWindow(QMainWindow):
         self.prefix_edit.setUndoRedoEnabled(True)
         prefix_row.addWidget(QLabel("Prefix:"))
         prefix_row.addWidget(self.prefix_edit)
+        prefix_row.addWidget(QLabel("Exclude:"))
+        self.prefix_not_edit = PhoneticLineEdit(self)
+        self.prefix_not_edit.setUndoRedoEnabled(True)
+        prefix_row.addWidget(self.prefix_not_edit)
         panel.addLayout(prefix_row)
         # Row for Suffix:
         suffix_row = QHBoxLayout()
@@ -916,6 +951,10 @@ class MainWindow(QMainWindow):
         self.suffix_edit.setUndoRedoEnabled(True)
         suffix_row.addWidget(QLabel("Suffix:"))
         suffix_row.addWidget(self.suffix_edit)
+        suffix_row.addWidget(QLabel("Exclude:"))
+        self.suffix_not_edit = PhoneticLineEdit(self)
+        self.suffix_not_edit.setUndoRedoEnabled(True)
+        suffix_row.addWidget(self.suffix_not_edit)
         panel.addLayout(suffix_row)
         # Row for Regex:
         regex_row = QHBoxLayout()
@@ -924,6 +963,11 @@ class MainWindow(QMainWindow):
         self.regex_edit.setUndoRedoEnabled(True)
         regex_row.addWidget(QLabel("Regex:"))
         regex_row.addWidget(self.regex_edit)
+        regex_row.addWidget(QLabel("Exclude:"))
+        self.regex_not_edit = PhoneticLineEdit(self)
+        self.regex_not_edit.setPlaceholderText("Regex exclude")
+        self.regex_not_edit.setUndoRedoEnabled(True)
+        regex_row.addWidget(self.regex_not_edit)
         panel.addLayout(regex_row)
         return panel
 
@@ -1065,6 +1109,9 @@ class MainWindow(QMainWindow):
             "prefix": self.prefix_edit.text().strip(),
             "suffix": self.suffix_edit.text().strip(),
             "regex": self.regex_edit.text().strip(),
+            "prefix_not": self.prefix_not_edit.text().strip() if hasattr(self, "prefix_not_edit") else "",
+            "suffix_not": self.suffix_not_edit.text().strip() if hasattr(self, "suffix_not_edit") else "",
+            "regex_not": self.regex_not_edit.text().strip() if hasattr(self, "regex_not_edit") else "",
             "length_spec": self.length_edit.text().strip(),
             "limit": int(self.limit_spin.value()),
         }
@@ -1073,6 +1120,12 @@ class MainWindow(QMainWindow):
         self.prefix_edit.set_text_tamil(p.get("prefix", ""))
         self.suffix_edit.set_text_tamil(p.get("suffix", ""))
         self.regex_edit.set_text_tamil(p.get("regex", ""))
+        if hasattr(self, "prefix_not_edit"):
+            self.prefix_not_edit.set_text_tamil(p.get("prefix_not", ""))
+        if hasattr(self, "suffix_not_edit"):
+            self.suffix_not_edit.set_text_tamil(p.get("suffix_not", ""))
+        if hasattr(self, "regex_not_edit"):
+            self.regex_not_edit.set_text_tamil(p.get("regex_not", ""))
         self.length_edit.setText(p.get("length_spec", ""))
         self.limit_spin.setValue(int(p.get("limit", self.limit_spin.value())))
 
@@ -1104,13 +1157,26 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "New Window", "No text selected or present in the active field.")
             return
         text = candidates[0]
-        choice, ok = QInputDialog.getItem(self, "New Window", "Use text as:", ["suffix", "prefix", "regex"], 0, False)
+        choice, ok = QInputDialog.getItem(
+            self, "New Window", "Use text as:",
+            ["prefix", "suffix", "regex", "not prefix", "not suffix", "not regex"],
+            0, False
+        )
         if not ok:
             return
         params = self._collect_query_params()
-        params["prefix"] = text if choice == "prefix" else ""
-        params["suffix"] = text if choice == "suffix" else ""
-        params["regex"]  = text if choice == "regex"  else ""
+        if choice == "prefix":
+            params["prefix"] = text; params["suffix"] = ""; params["regex"] = ""
+        elif choice == "suffix":
+            params["suffix"] = text; params["prefix"] = ""; params["regex"] = ""
+        elif choice == "regex":
+            params["regex"] = text; params["prefix"] = ""; params["suffix"] = ""
+        elif choice == "not prefix":
+            params["prefix_not"] = text
+        elif choice == "not suffix":
+            params["suffix_not"] = text
+        elif choice == "not regex":
+            params["regex_not"] = text
         win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size)
         win._apply_query_params(params)
         win.query_words()
@@ -1119,11 +1185,20 @@ class MainWindow(QMainWindow):
         self.log_ui_event("NEW_WINDOW_SELECTION", {"choice": choice, "text": text, **params})
     
     def new_window_from_text(self, kind, text):
-        """Spawn a new window using 'text' as prefix/suffix/regex per 'kind'."""
+        """Spawn a new window using 'text' as prefix/suffix/regex or their negatives."""
         params = self._collect_query_params()
-        params["prefix"] = text if kind == "prefix" else ""
-        params["suffix"] = text if kind == "suffix" else ""
-        params["regex"]  = text if kind == "regex"  else ""
+        if kind == "prefix":
+            params["prefix"] = text; params["suffix"] = ""; params["regex"] = ""
+        elif kind == "suffix":
+            params["suffix"] = text; params["prefix"] = ""; params["regex"] = ""
+        elif kind == "regex":
+            params["regex"] = text; params["prefix"] = ""; params["suffix"] = ""
+        elif kind == "not prefix":
+            params["prefix_not"] = text
+        elif kind == "not suffix":
+            params["suffix_not"] = text
+        elif kind == "not regex":
+            params["regex_not"] = text
         win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size)
         win._apply_query_params(params)
         win.query_words()
@@ -1149,6 +1224,11 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         for kind, label in (("prefix", "Prefix"), ("suffix", "Suffix"), ("regex", "Regex")):
+            act = QAction(f"New Window as {label}: {text}", self)
+            act.triggered.connect(lambda _, k=kind: self.new_window_from_text(k, text))
+            menu.addAction(act)
+        menu.addSeparator()
+        for kind, label in (("not_prefix", "Exclude Prefix"), ("not_suffix", "Exclude Suffix"), ("not_regex", "Exclude Regex")):
             act = QAction(f"New Window as {label}: {text}", self)
             act.triggered.connect(lambda _, k=kind: self.new_window_from_text(k, text))
             menu.addAction(act)
