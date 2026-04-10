@@ -234,7 +234,7 @@ class PhoneticLineEdit(QLineEdit):
             self.trailing = current_text[cp:]
         self.composition = ""
         self.update_display()
-    
+
     def contextMenuEvent(self, event):
         # Base QLineEdit menu
         menu = self.createStandardContextMenu()
@@ -332,6 +332,7 @@ class MainWindow(QMainWindow):
         self.edited_ids = set()
         self.suppress_item_changed = False
         self.table.itemChanged.connect(self.on_cell_changed)
+        self.dirty = False
         self.reminders = set()
         self.load_reminders()
         logging.info("Loaded %d reminder word(s)", len(self.reminders))
@@ -547,6 +548,9 @@ class MainWindow(QMainWindow):
        return f"{timestamp}-{safe_prefix}-{safe_len}-{safe_suffix}.tsv"
 
     def commit_edits(self):
+        if not getattr(self, "dirty", False):
+            QMessageBox.information(self, "Commit", "No edits since last save.")
+            return
         # Collect only rows whose 'splits' were edited
         edited_rows = []
         for row in range(self.table.rowCount()):
@@ -580,6 +584,26 @@ class MainWindow(QMainWindow):
             self.log_ui_event("COMMIT", {"batch": batch_name, "saved_rows": len(edited_rows)})
             logging.info("Saved batch file to %s", filepath)
             QMessageBox.information(self, "Commit", f"Saved {len(edited_rows)} edited row(s) to {filepath}")
+            # Update baseline to prevent re-saving unchanged rows
+            edited_ids_set = set()
+            for rec_id, word, new_splits, freq, glen, notes in edited_rows:
+                self.original_splits[rec_id] = new_splits
+                edited_ids_set.add(rec_id)
+            # Clear edited markers and reset row backgrounds for those rows
+            for row in range(self.table.rowCount()):
+                id_item = self.table.item(row, 0)
+                if not id_item:
+                    continue
+                rid = id_item.text()
+                if rid in edited_ids_set:
+                    for c in range(self.table.columnCount()):
+                        it = self.table.item(row, c)
+                        if it:
+                            it.setBackground(Qt.white)
+                    if rid in self.edited_ids:
+                        self.edited_ids.remove(rid)
+            # Reset dirty flag
+            self.dirty = bool(self.edited_ids)
         except Exception as e:
             QMessageBox.critical(self, "Commit Error", str(e))
 
@@ -608,6 +632,7 @@ class MainWindow(QMainWindow):
                 self.table.setItem(row, col, new_item)
         self.table.resizeColumnsToContents()
         self.suppress_item_changed = False
+        self.dirty = False
 
 
     def populate_table_from_results(self, results):
@@ -986,8 +1011,8 @@ class MainWindow(QMainWindow):
         self.length_edit.setText("8-")
         self.limit_spin = QSpinBox()
         self.limit_spin.setMinimum(1)
-        self.limit_spin.setMaximum(10000)
-        self.limit_spin.setValue(10)
+        self.limit_spin.setMaximum(1000000000)
+        self.limit_spin.setValue(1000)
         self.phonetic_cb = QCheckBox("Phonetic Input")
         self.phonetic_cb.setChecked(True)
         self.phonetic_cb.toggled.connect(self.refresh_phonetic_fields)
@@ -1096,6 +1121,7 @@ class MainWindow(QMainWindow):
                     it = self.table.item(row, c)
                     if it:
                         it.setBackground(Qt.yellow)
+                self.dirty = True
         else:
             if rec_id in self.edited_ids:
                 self.edited_ids.remove(rec_id)
@@ -1103,6 +1129,7 @@ class MainWindow(QMainWindow):
                     it = self.table.item(row, c)
                     if it:
                         it.setBackground(Qt.white)
+                self.dirty = bool(self.edited_ids)
 
     def _collect_query_params(self):
         return {
@@ -1183,7 +1210,7 @@ class MainWindow(QMainWindow):
         self.child_windows.append(win)
         win.show()
         self.log_ui_event("NEW_WINDOW_SELECTION", {"choice": choice, "text": text, **params})
-    
+
     def new_window_from_text(self, kind, text):
         """Spawn a new window using 'text' as prefix/suffix/regex or their negatives."""
         params = self._collect_query_params()
