@@ -115,6 +115,9 @@ class WordIndex:
             self.len_counts[gl] = end - start
             start = end
         self.order_index = {w: i for i, (w, _, _) in enumerate(self.words)}
+        # Precompute word -> glen and the set of words for O(1) access in summaries
+        self.glen_map = {w: gl for (w, _, gl) in self.words}
+        self.index_words = set(self.glen_map.keys())
     
     def _prefix_bounds(self, prefix):
         lo = bisect_left(self._words_only, prefix)

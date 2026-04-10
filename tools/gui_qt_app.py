@@ -367,11 +367,11 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central)
         splitter = self._build_main_splitter()
         main_layout.addWidget(splitter)
-        self.update_summary()
         WINDOWS.add(self)
         self.reminders = set()
         self.load_reminders()
         logging.info("Loaded %d reminder word(s)", len(self.reminders))
+        self.bulk_editing = False
 
         # (Query button connected earlier in the params panel.)
         self._init_shortcuts()
@@ -512,7 +512,6 @@ class MainWindow(QMainWindow):
         combined, shown_new, shown_curated = self._pick_curated_and_new(new_rows, old_rows, q["limit"], q["curated_ratio"])
         self._log_filter_stats(raw, new_rows, old_rows, shown_new, shown_curated, q["curated_ratio"])
         self.populate_table_from_results(combined)
-        self.update_summary()
 
     def build_tsv_lines(self):
         """
@@ -654,14 +653,8 @@ class MainWindow(QMainWindow):
         return filepath, tsv_lines
 
     def _refresh_curated_and_broadcast(self, tsv_lines):
-        """Update curated index from batch, reload from disk, then refresh summary in all windows."""
+        """Update curated index from batch (incremental). No auto-refresh; use Summary Refresh."""
         self.curated.update_from_batch(tsv_lines)
-        self.curated.reload()
-        for win in list(WINDOWS):
-            try:
-                win.update_summary()
-            except Exception:
-                pass
 
     def _update_baseline_after_save(self, edited_rows):
         """Update original_splits baseline and clear edited markers/backgrounds for saved rows."""
@@ -701,7 +694,6 @@ class MainWindow(QMainWindow):
             logging.info("Saved batch file to %s", filepath)
             QMessageBox.information(self, "Commit", f"Saved {len(edited_rows)} edited row(s) to {filepath}")
             self._update_baseline_after_save(edited_rows)
-            self.update_summary()
         except Exception as e:
             QMessageBox.critical(self, "Commit Error", str(e))
 
@@ -730,7 +722,6 @@ class MainWindow(QMainWindow):
                 self.table.setItem(row, col, new_item)
         self.table.resizeColumnsToContents()
         self.suppress_item_changed = False
-        self.dirty = False  # ADD: nothing is edited immediately after a fresh populate
         self.dirty = False
 
 
@@ -922,7 +913,7 @@ class MainWindow(QMainWindow):
         return [self.table.model().index(row, 2) for row in range(self.table.rowCount())]
 
     def _replace_in_indexes(self, indexes, find_text, replace_text):
-        count = 0
+        changed_rows = set()
         for ix in indexes:
             row = ix.row()
             item = self.table.item(row, 2)
@@ -932,8 +923,36 @@ class MainWindow(QMainWindow):
             new_text = original.replace(find_text, replace_text)
             if new_text != original:
                 item.setText(new_text)
-                count += 1
-        return count
+                changed_rows.add(row)
+        return changed_rows
+
+    def _mark_bulk_edits(self, rows):
+        """Given an iterable of row indices, compare current splits vs baseline and highlight."""
+        for row in set(rows):
+            id_item = self.table.item(row, 0)
+            sp_item = self.table.item(row, 2)
+            if not id_item or not sp_item:
+                continue
+            rec_id = id_item.text()
+            curr = sp_item.text()
+            orig = self.original_splits.get(rec_id, "")
+            if curr != orig:
+                if rec_id not in self.edited_ids:
+                    self.edited_ids.add(rec_id)
+                for c in range(self.table.columnCount()):
+                    it = self.table.item(row, c)
+                    if it:
+                        it.setBackground(Qt.yellow)
+                self.dirty = True
+            else:
+                if rec_id in self.edited_ids:
+                    self.edited_ids.remove(rec_id)
+                for c in range(self.table.columnCount()):
+                    it = self.table.item(row, c)
+                    if it:
+                        it.setBackground(Qt.white)
+        if not self.edited_ids:
+            self.dirty = False
 
     def apply_replace_to_cell(self):
         find_text = self.find_edit.text()
@@ -946,7 +965,17 @@ class MainWindow(QMainWindow):
         if not indexes:
             QMessageBox.warning(self, "Find/Replace", "No cells available in the splits column.")
             return
-        count_replaced = self._replace_in_indexes(indexes, find_text, normalized_replace)
+        # Bulk edit: block itemChanged signals and avoid per-row logging/painting
+        self.bulk_editing = True
+        self.table.blockSignals(True)
+        try:
+            changed_rows = self._replace_in_indexes(indexes, find_text, normalized_replace)
+        finally:
+            self.table.blockSignals(False)
+            self.bulk_editing = False
+        # Now, mark edits and backgrounds in one pass
+        self._mark_bulk_edits(changed_rows)
+        count_replaced = len(changed_rows)
         if count_replaced > 0:
             self.log_ui_event("REPLACE", {"find": find_text, "replace": normalized_replace, "cells_modified": count_replaced})
             QMessageBox.information(self, "Find/Replace", f"Replacement applied to {count_replaced} cell(s).")
@@ -1194,6 +1223,10 @@ class MainWindow(QMainWindow):
         title = QLabel("Summary")
         title.setStyleSheet("font-weight: bold;")
         v.addWidget(title)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setToolTip("Recompute summary")
+        refresh_btn.clicked.connect(self.update_summary)
+        v.addWidget(refresh_btn)
 
         # Stats labels
         self.sum_total_words = QLabel("Total words: 0")
@@ -1230,6 +1263,17 @@ class MainWindow(QMainWindow):
             return
         # Track only changes in the 'splits' column (2)
         if item.column() != 2:
+            return
+        if getattr(self, "bulk_editing", False):
+            # Lightweight tracking only; skip per-row log and painting during bulk ops
+            row = item.row()
+            id_item = self.table.item(row, 0)
+            if id_item:
+                rid = id_item.text()
+                orig = self.original_splits.get(rid, "")
+                if item.text() != orig:
+                    self.edited_ids.add(rid)
+                    self.dirty = True
             return
         row = item.row()
         id_item = self.table.item(row, 0)
@@ -1394,10 +1438,8 @@ class MainWindow(QMainWindow):
         menu.exec_(self.table.viewport().mapToGlobal(pos))
 
     def _compute_summary_sets(self):
-        glen_map = {}
-        index_words = set()
-        for w, fr, gl in self.word_index.words:
-            index_words.add(w); glen_map[w] = gl
+        glen_map = self.word_index.glen_map
+        index_words = self.word_index.index_words
         curated_set = getattr(self.curated, "curated_words", set())
         curated_in_index = {w for w in curated_set if w in index_words}
         remaining_set = index_words - curated_in_index
