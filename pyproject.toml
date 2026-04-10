@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chorkilai"
+version = "0.0.1"
+authors = [
+  { name="vanangamudi", email="selva.developer@gmail.com" },
+]
+description = "a trie library to support tamil spellchecker ilakkani"
+readme = "YENNAI_PADI.txt"
+license = { file="LICENSE" }
+requires-python = ">=3.5"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+             "arichuvadi==0.0.6",
+]
+
+[project.scripts]
+
+[project.urls]
+"Homepage" = "https://github.com/vanangamudi/chorkilai"
+"Bug Tracker" = "https://github.com/vanangamudi/chorkilai/issues"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["mlm"]  # ["."] by default
+include = ["*"]  # ["*"] by default
+exclude = []  # empty by default
+namespaces = true  # true by default
