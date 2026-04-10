@@ -207,95 +207,58 @@ def load_model(model_dir, device="cpu"):
     model.eval()
     return model, cfg, src2i, tgt2i, i2tgt
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--profile", default="default")
-    ap.add_argument("--base_dir", default=None)
-    ap.add_argument("--dataset", default=None, help="Path to tokenizer-*.tsv. If omitted, use the latest in profile datasets dir.")
-    ap.add_argument("--epochs", type=int, default=5)
-    ap.add_argument("--batch_size", type=int, default=128)
-    ap.add_argument("--emb", type=int, default=128)
-    ap.add_argument("--hidden", type=int, default=256)
-    ap.add_argument("--layers", type=int, default=1)
-    ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--token_delim", default="-")
-    ap.add_argument("--device", default="cpu")
-    ap.add_argument("--model_dir", default=None, help="Use an existing saved model dir for eval/infer; if set with --no_train, skips training")
-    ap.add_argument("--no_train", action="store_true", help="Skip training and only run eval/infer with --model_dir")
-    ap.add_argument("--eval_dataset", default=None, help="Evaluate exact-match accuracy on a TSV (header: src<TAB>tgt)")
-    ap.add_argument("--infer_words", nargs="*", default=None, help="Words to tokenize (space-separated)")
-    ap.add_argument("--infer_file", default=None, help="Path to a file with one word per line")
-    ap.add_argument("--infer_out", default=None, help="Optional TSV output path for inference (word<TAB>pred)")
-    ap.add_argument("--max_decode_len", type=int, default=None, help="Optional max output tokens for greedy decode")
-    args = ap.parse_args()
+def choose_dataset(prof, ds_path):
+    if ds_path:
+        return ds_path
+    try:
+        cands = [p for p in os.listdir(prof.datasets_dir) if p.startswith("tokenizer-") and p.endswith(".tsv")]
+        if not cands:
+            raise SystemExit("No dataset found. Run: python -m tools.export_batches_dataset --profile ...")
+        return os.path.join(prof.datasets_dir, sorted(cands)[-1])
+    except FileNotFoundError:
+        raise SystemExit("No dataset dir found. Run exporter first.")
 
-    prof = Profile(name=args.profile, base_dir=args.base_dir)
+def prepare_vocabs_and_loader(pairs, args):
+    src2i, i2src, tgt2i, i2tgt = build_vocabs(pairs, token_delim=args.token_delim)
+    if PAD in src2i and src2i[PAD] != 0:
+        def remap(v):
+            it = sorted(v.items(), key=lambda kv: kv[1])
+            keys = [k for k, _ in it]
+            new = {k: i for i, k in enumerate(keys)}
+            return new, {i: k for k, i in new.items()}
+        src2i, i2src = remap(src2i)
+    if PAD in tgt2i and tgt2i[PAD] != 0:
+        def remap(v):
+            it = sorted(v.items(), key=lambda kv: kv[1])
+            keys = [k for k, _ in it]
+            new = {k: i for i, k in enumerate(keys)}
+            return new, {i: k for k, i in new.items()}
+        tgt2i, i2tgt = remap(tgt2i)
+    ds = TokDataset(pairs, src2i, tgt2i, token_delim=args.token_delim)
+    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate)
+    return (src2i, i2src, tgt2i, i2tgt), loader
 
-    # Option A: load an existing model for eval/infer only
-    if args.no_train:
-        if not args.model_dir:
-            raise SystemExit("--no_train requires --model_dir to load a saved model")
-        model, cfg, src2i, tgt2i, i2tgt = load_model(args.model_dir, device=args.device)
-        out_dir = args.model_dir  # for logging consistency
+def train_and_save(prof, args, vocabs, loader):
+    src2i, i2src, tgt2i, i2tgt = vocabs
+    enc = Encoder(vocab_size=len(src2i), emb_dim=args.emb, hid=args.hidden, layers=args.layers)
+    dec = Decoder(vocab_size=len(tgt2i), emb_dim=args.emb, hid=args.hidden, layers=args.layers)
+    model = Seq2Seq(enc, dec)
+    train_loop(model, loader, tgt_pad_idx=tgt2i[PAD], epochs=args.epochs, lr=args.lr, device=args.device)
+    ts = time.strftime("%Y%m%dT%H%M%S", time.localtime())
+    out_dir = os.path.join(prof.models_dir, ts)
+    cfg = {
+        "emb": args.emb, "hidden": args.hidden, "layers": args.layers, "lr": args.lr,
+        "token_delim": args.token_delim, "src_vocab": len(src2i), "tgt_vocab": len(tgt2i),
+        "dataset": os.path.abspath(args.dataset) if args.dataset else ""
+    }
+    voc = {"src2i": src2i, "i2src": i2src, "tgt2i": tgt2i, "i2tgt": i2tgt, "special": {"PAD": PAD, "BOS": BOS, "EOS": EOS}}
+    save_model(out_dir, model, cfg, voc)
+    print(f"Saved model to {out_dir}")
+    return out_dir, model, cfg, (src2i, i2src, tgt2i, i2tgt)
 
-    # Option B: train a new model (and then optionally eval/infer with it)
-    else:
-        ds_path = args.dataset
-        if not ds_path:
-            try:
-                cands = [p for p in os.listdir(prof.datasets_dir) if p.startswith("tokenizer-") and p.endswith(".tsv")]
-                if not cands:
-                    raise SystemExit("No dataset found. Run: python -m tools.export_batches_dataset --profile ...")
-                ds_path = os.path.join(prof.datasets_dir, sorted(cands)[-1])
-            except FileNotFoundError:
-                raise SystemExit("No dataset dir found. Run exporter first.")
-        print(f"Using dataset: {ds_path}")
-
-        pairs = load_dataset(ds_path)
-        if not pairs:
-            raise SystemExit("Dataset is empty")
-
-        src2i, i2src, tgt2i, i2tgt = build_vocabs(pairs, token_delim=args.token_delim)
-        if PAD in src2i and src2i[PAD] != 0:
-            def remap(v):
-                it = sorted(v.items(), key=lambda kv: kv[1])
-                keys = [k for k, _ in it]
-                new = {k: i for i, k in enumerate(keys)}
-                return new, {i: k for k, i in new.items()}
-            src2i, i2src = remap(src2i)
-        if PAD in tgt2i and tgt2i[PAD] != 0:
-            def remap(v):
-                it = sorted(v.items(), key=lambda kv: kv[1])
-                keys = [k for k, _ in it]
-                new = {k: i for i, k in enumerate(keys)}
-                return new, {i: k for k, i in new.items()}
-            tgt2i, i2tgt = remap(tgt2i)
-
-        ds = TokDataset(pairs, src2i, tgt2i, token_delim=args.token_delim)
-        loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate)
-
-        enc = Encoder(vocab_size=len(src2i), emb_dim=args.emb, hid=args.hidden, layers=args.layers)
-        dec = Decoder(vocab_size=len(tgt2i), emb_dim=args.emb, hid=args.hidden, layers=args.layers)
-        model = Seq2Seq(enc, dec)
-
-        train_loop(model, loader, tgt_pad_idx=tgt2i[PAD], epochs=args.epochs, lr=args.lr, device=args.device)
-
-        ts = time.strftime("%Y%m%dT%H%M%S", time.localtime())
-        out_dir = os.path.join(prof.models_dir, ts)
-        cfg = {
-            "emb": args.emb, "hidden": args.hidden, "layers": args.layers, "lr": args.lr,
-            "token_delim": args.token_delim, "src_vocab": len(src2i), "tgt_vocab": len(tgt2i),
-            "dataset": os.path.abspath(ds_path)
-        }
-        vocabs = {"src2i": src2i, "i2src": i2src, "tgt2i": tgt2i, "i2tgt": i2tgt, "special": {"PAD": PAD, "BOS": BOS, "EOS": EOS}}
-        save_model(out_dir, model, cfg, vocabs)
-        print(f"Saved model to {out_dir}")
-
-    # Optional evaluation
+def maybe_run_eval_and_infer(args, model, cfg, src2i, i2tgt, tgt2i):
     if args.eval_dataset:
         evaluate(args.eval_dataset, model, cfg, src2i, tgt2i, i2tgt, device=args.device, max_len=args.max_decode_len)
-
-    # Optional inference
     words = []
     if args.infer_words:
         words.extend(args.infer_words)
@@ -317,6 +280,51 @@ def main():
         else:
             for w, p in preds:
                 print(f"{w}\t{p}")
+
+def build_arg_parser():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--profile", default="default")
+    ap.add_argument("--base_dir", default=None)
+    ap.add_argument("--dataset", default=None, help="Path to tokenizer-*.tsv. If omitted, use the latest in profile datasets dir.")
+    ap.add_argument("--epochs", type=int, default=5)
+    ap.add_argument("--batch_size", type=int, default=128)
+    ap.add_argument("--emb", type=int, default=128)
+    ap.add_argument("--hidden", type=int, default=256)
+    ap.add_argument("--layers", type=int, default=1)
+    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--token_delim", default="-")
+    ap.add_argument("--device", default="cpu")
+    ap.add_argument("--model_dir", default=None, help="Use an existing saved model dir for eval/infer; if set with --no_train, skips training")
+    ap.add_argument("--no_train", action="store_true", help="Skip training and only run eval/infer with --model_dir")
+    ap.add_argument("--eval_dataset", default=None, help="Evaluate exact-match accuracy on a TSV (header: src<TAB>tgt)")
+    ap.add_argument("--infer_words", nargs="*", default=None, help="Words to tokenize (space-separated)")
+    ap.add_argument("--infer_file", default=None, help="Path to a file with one word per line")
+    ap.add_argument("--infer_out", default=None, help="Optional TSV output path for inference (word<TAB>pred)")
+    ap.add_argument("--max_decode_len", type=int, default=None, help="Optional max output tokens for greedy decode")
+    return ap
+
+def main():
+    ap = build_arg_parser()
+    args = ap.parse_args()
+
+    prof = Profile(name=args.profile, base_dir=args.base_dir)
+
+    if args.no_train:
+        if not args.model_dir:
+            raise SystemExit("--no_train requires --model_dir to load a saved model")
+        model, cfg, src2i, tgt2i, i2tgt = load_model(args.model_dir, device=args.device)
+        maybe_run_eval_and_infer(args, model, cfg, src2i, i2tgt, tgt2i)
+        return
+
+    ds_path = choose_dataset(prof, args.dataset)
+    print(f"Using dataset: {ds_path}")
+    pairs = load_dataset(ds_path)
+    if not pairs:
+        raise SystemExit("Dataset is empty")
+    vocabs, loader = prepare_vocabs_and_loader(pairs, args)
+    out_dir, model, cfg, (src2i, i2src, tgt2i, i2tgt) = train_and_save(prof, args, vocabs, loader)
+    cfg["dataset"] = os.path.abspath(ds_path)
+    maybe_run_eval_and_infer(args, model, cfg, src2i, i2tgt, tgt2i)
 
 if __name__ == "__main__":
     main()
