@@ -109,70 +109,76 @@ CONSONANT_TOKENS = sorted(CONSONANTS.keys(), key=len, reverse=True)
 def transliterate(text):
     """
     Transliterates romanized input using a scheme modeled on the Emacs Tamil ITRANS
-    input method. It greedily matches vowel and consonant tokens (using the provided
-    dictionaries) and attaches vowel diacritics to a pending consonant. If no vowel
-    follows a consonant (i.e. at the end), a pulli is appended.
+    input method. It greedily matches vowel and consonant tokens and attaches vowel diacritics
+    to a pending consonant. If no vowel follows a consonant, a pulli is appended.
     """
-
     output = []
-    pending = None  # holds a pending consonant letter (plain form from CONSONANTS)
+    pending = None
     i = 0
-    while i < len(text):
-        # First try to match a vowel token.
-        matched_token = None
+
+    def match_vowel_at(j):
         for vt in VOWEL_TOKENS:
-            if text[i:i+len(vt)].lower() == vt:
-                matched_token = vt
-                break
-        if matched_token is not None:
-            if pending is not None:
-                output.append(pending + VOWEL_DIACRITICS[matched_token])
-                pending = None
-            else:
-                output.append(PHONETIC_VOWELS[matched_token])
-            i += len(matched_token)
-            continue
+            if text[j:j+len(vt)].lower() == vt:
+                return vt
+        return None
 
-        matched_token = None
+    def match_consonant_at(j):
         for ct in CONSONANT_TOKENS:
-            candidate = text[i:i+len(ct)]
-            # First check for an exact match.
-            if candidate == ct:
-                matched_token = ct
-                break
-            # Otherwise, if the lower-case forms match, then only accept this candidate
-            # if the candidate’s first character is lowercase and the token’s first character is also lowercase.
-            elif candidate.lower() == ct.lower():
-                if candidate and ct and candidate[0].islower() and ct[0].islower():
-                    matched_token = ct
-                    break
-        if matched_token is not None:
-            if pending is not None:
-                output.append(pending + PULLI)
-            pending = CONSONANTS[matched_token]
-            i += len(matched_token)
+            cand = text[j:j+len(ct)]
+            if cand == ct:
+                return ct
+            if cand.lower() == ct.lower():
+                if cand and ct and cand[0].islower() and ct[0].islower():
+                    return ct
+        return None
+
+    def flush_pending_with_vowel(vt):
+        nonlocal pending
+        if pending is not None:
+            output.append(pending + VOWEL_DIACRITICS[vt])
+            pending = None
+        else:
+            output.append(PHONETIC_VOWELS[vt])
+
+    def flush_pending_pulli():
+        nonlocal pending
+        if pending is not None:
+            output.append(pending + PULLI)
+            pending = None
+
+    def flush_pending_raw():
+        nonlocal pending
+        if pending is not None:
+            output.append(pending)
+            pending = None
+
+    while i < len(text):
+        vt = match_vowel_at(i)
+        if vt is not None:
+            flush_pending_with_vowel(vt)
+            i += len(vt)
             continue
 
-        # If current character is whitespace or punctuation:
-        if text[i] in string.whitespace or text[i] in string.punctuation:
+        ct = match_consonant_at(i)
+        if ct is not None:
             if pending is not None:
-                # flush pending with pulli since a boundary is reached.
                 output.append(pending + PULLI)
-                pending = None
-            output.append(text[i])
-            i += 1
+            pending = CONSONANTS[ct]
+            i += len(ct)
             continue
+
+        ch = text[i]
+        if ch in string.whitespace or ch in string.punctuation:
+            flush_pending_pulli()
+            output.append(ch)
+            i += 1
         else:
-            # flush pending as a pure consonant (without pulli) and output the character.
-            if pending is not None:
-                output.append(pending)
-                pending = None
-            output.append(text[i])
+            flush_pending_raw()
+            output.append(ch)
             i += 1
 
     if pending is not None:
         output.append(pending + PULLI)
-
     return ''.join(output)
 
 if __name__ == "__main__":

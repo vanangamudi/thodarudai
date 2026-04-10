@@ -87,46 +87,23 @@ class PhoneticTextEdit(QTextEdit):
         from PyQt5.QtCore import Qt
         key = event.key()
         ch = event.text()
-        if self.textCursor().position() < len(self.toPlainText()):
-            super().keyPressEvent(event)
-            self.committed = self.toPlainText()
-            self.composition = ""
-            return
+        current_text = self.text()
+        cp = self.cursorPosition()
+        # Normalize buffers for caret/selection position
+        self._normalize_state_for_editing(current_text, cp)
+    
         if key == Qt.Key_Backspace:
-            if self.composition:
-                self.composition = self.composition[:-1]
-            else:
-                self.committed = self.committed[:-1]
-            self.update_display()
-            event.accept()
-            return
+            self._handle_backspace()
+            event.accept(); return
         elif key == Qt.Key_Delete:
-            if self.composition:
-                self.composition = ""
-            else:
-                self.committed = self.committed[:-1]
-            self.update_display()
-            event.accept()
-            return
+            self._handle_delete()
+            event.accept(); return
         elif ch and (ch in string.whitespace or ch in string.punctuation):
-            self.commit_composition()
-            self.committed += ch
-            self.update_display()
-            event.accept()
-            return
+            self._handle_boundary_char(ch)
+            event.accept(); return
         elif ch and ch.isalnum():
-            candidate = self.composition + ch
-            if self.is_possible_prefix(candidate):
-                self.composition = candidate
-            else:
-                self.commit_composition()
-                if self.is_possible_prefix(ch):
-                    self.composition = ch
-                else:
-                    self.committed += ch
-            self.update_display()
-            event.accept()
-            return
+            self._handle_alnum_char(ch)
+            event.accept(); return
         else:
             super().keyPressEvent(event)
 
