@@ -156,83 +156,83 @@ class PhoneticLineEdit(QLineEdit):
         logging.debug("Display updated: '%s' (committed: '%s', composition: '%s')",
                       disp, self.committed, self.composition)
 
+    def _normalize_state_for_editing(self, current_text, cp):
+        if self.hasSelectedText():
+            sel_start = self.selectionStart()
+            sel_end = sel_start + len(self.selectedText())
+            self.committed = current_text[:sel_start]
+            self.trailing = current_text[sel_end:]
+            self.composition = ""
+            return
+        expected_cp = len(self.committed + self._render_composition())
+        if cp == expected_cp and current_text.startswith(self.committed + self._render_composition()) and current_text.endswith(self.trailing):
+            return
+        if cp < len(current_text):
+            self.committed = current_text[:cp]
+            self.trailing = current_text[cp:]
+            self.composition = ""
+        else:
+            if self.trailing:
+                self.committed = current_text
+                self.trailing = ""
+                self.composition = ""
+
+    def _handle_backspace(self):
+        if self.composition:
+            self.composition = self.composition[:-1]
+        else:
+            self.committed = self.committed[:-1]
+        self.update_display()
+
+    def _handle_delete(self):
+        if self.composition:
+            self.composition = ""
+        elif self.trailing:
+            self.trailing = self.trailing[1:]
+        self.update_display()
+
+    def _handle_boundary_char(self, ch):
+        self.commit_composition()
+        self.committed += ch
+        self.update_display()
+
+    def _handle_alnum_char(self, ch):
+        candidate = self.composition + ch
+        if self.is_possible_prefix(candidate):
+            self.composition = candidate
+        else:
+            self.commit_composition()
+            if self.is_possible_prefix(ch):
+                self.composition = ch
+            else:
+                self.committed += ch
+        self.update_display()
+
     def keyPressEvent(self, event):
         key = event.key()
         ch = event.text()
         logging.debug("Key press: key=%s, text='%s', current composition='%s', committed='%s'",
                       key, ch, self.composition, self.committed)
 
+        # Normalize buffers for caret/selection position
         current_text = self.text()
         cp = self.cursorPosition()
-        # Normalize state to support editing at the caret/selection
-        if self.hasSelectedText():
-            sel_start = self.selectionStart()
-            sel_end = sel_start + len(self.selectedText())
-            self.committed = current_text[:sel_start]
-            self.trailing = current_text[sel_end:]
-            # Selection replaces the boundary → reset composition
-            self.composition = ""
-        else:
-            expected_cp = len(self.committed + self._render_composition())
-            # If caret sits exactly after the rendered composition and before trailing, keep buffers as-is
-            if cp == expected_cp and current_text.startswith(self.committed + self._render_composition()) and current_text.endswith(self.trailing):
-                pass  # preserve self.committed/self.composition/self.trailing
-            elif cp < len(current_text):
-                # User clicked/moved caret into the middle elsewhere → resync and reset composition
-                self.committed = current_text[:cp]
-                self.trailing = current_text[cp:]
-                self.composition = ""
-            else:
-                # Caret at visual end: absorb stale trailing if any
-                if self.trailing:
-                    self.committed = current_text
-                    self.trailing = ""
-                    self.composition = ""
+        self._normalize_state_for_editing(current_text, cp)
 
         if key == Qt.Key_Backspace:
-            if self.composition:
-                self.composition = self.composition[:-1]
-                logging.debug("Backspace: New composition='%s'", self.composition)
-            else:
-                self.committed = self.committed[:-1]
-                logging.debug("Backspace: Removed last char from committed, new committed='%s'", self.committed)
-            self.update_display()
+            self._handle_backspace()
             event.accept()
             return
         elif key == Qt.Key_Delete:
-            if self.composition:
-                self.composition = ""
-                logging.debug("Delete: Cleared composition")
-            elif self.trailing:
-                self.trailing = self.trailing[1:]
-                logging.debug("Delete: Removed first char from trailing, new trailing='%s'", self.trailing)
-            else:
-                pass
-            self.update_display()
+            self._handle_delete()
             event.accept()
             return
         elif ch and (ch in string.whitespace or ch in string.punctuation):
-            logging.debug("Boundary key pressed: '%s'", ch)
-            self.commit_composition()
-            self.committed += ch
-            self.update_display()
+            self._handle_boundary_char(ch)
             event.accept()
             return
         elif ch and ch.isalnum():
-            candidate = self.composition + ch
-            if self.is_possible_prefix(candidate):
-                self.composition = candidate
-                logging.debug("Accepted key, new composition='%s'", self.composition)
-            else:
-                logging.debug("Candidate '%s' not possible, committing current composition", candidate)
-                self.commit_composition()
-                if self.is_possible_prefix(ch):
-                    self.composition = ch
-                    logging.debug("Starting new composition with '%s'", ch)
-                else:
-                    self.committed += ch
-                    logging.debug("Appending '%s' to committed", ch)
-            self.update_display()
+            self._handle_alnum_char(ch)
             event.accept()
             return
         else:
@@ -299,10 +299,7 @@ class TableEditDelegate(QStyledItemDelegate):
         return ed
 
 class MainWindow(QMainWindow):
-    def __init__(self, ui_scale=1.5, font_size=None):
-        super().__init__()
-        self.ui_scale = float(ui_scale) if ui_scale else 1.0
-        self.font_size = int(font_size) if font_size else max(14, int(round(15 * self.ui_scale)))
+    def _apply_global_styles(self):
         btn_h = int(28 * self.ui_scale)
         le_h = int(26 * self.ui_scale)
         pad_y = int(6 * self.ui_scale)
@@ -310,22 +307,53 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             f"""
             QWidget {{ font-size: {self.font_size}pt; }}
-            QPushButton {{
-                font-size: {self.font_size}pt;
-                min-height: {btn_h}px;
-                padding: {pad_y}px {pad_x}px;
-            }}
-            QLineEdit {{
-                font-size: {self.font_size}pt;
-                min-height: {le_h}px;
-            }}
-            QHeaderView::section {{
-                font-size: {self.font_size}pt;
-                padding: {max(4, pad_y-2)}px {max(6, pad_x-6)}px;
-            }}
+            QPushButton {{ font-size: {self.font_size}pt; min-height: {btn_h}px; padding: {pad_y}px {pad_x}px; }}
+            QLineEdit {{ font-size: {self.font_size}pt; min-height: {le_h}px; }}
+            QHeaderView::section {{ font-size: {self.font_size}pt; padding: {max(4, pad_y-2)}px {max(6, pad_x-6)}px; }}
             """
         )
-        import os
+
+    def _build_main_splitter(self):
+        left_container = QWidget()
+        left_layout = QVBoxLayout(left_container)
+        left_layout.addLayout(self.build_prefix_suffix_regex_panel())
+        left_layout.addLayout(self.build_query_parameters_panel())
+        left_layout.addLayout(self.build_sort_panel())
+        left_layout.addWidget(self.build_table_panel())
+        left_layout.addLayout(self.build_find_replace_panel())
+        self.summary_widget = self.build_summary_panel()
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(left_container)
+        splitter.addWidget(self.summary_widget)
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 1)
+        return splitter
+
+    def _init_paths_and_indexes(self):
+        self._init_paths_and_indexes()
+
+    def _init_shortcuts(self):
+        from PyQt5.QtGui import QKeySequence
+        MyShortcut(QKeySequence("Ctrl+S"), self, activated=self.commit_edits)
+        MyShortcut(QKeySequence("Alt+P"), self, activated=lambda: self.prefix_edit.setFocus())
+        MyShortcut(QKeySequence("Alt+S"), self, activated=lambda: self.suffix_edit.setFocus())
+        MyShortcut(QKeySequence("Alt+R"), self, activated=lambda: self.regex_edit.setFocus())
+        MyShortcut(QKeySequence("Alt+F"), self, activated=lambda: self.find_edit.setFocus())
+        MyShortcut(QKeySequence("Alt+G"), self, activated=lambda: self.replace_edit.setFocus())
+        MyShortcut(QKeySequence("Alt+L"), self, activated=lambda: self.length_edit.setFocus())
+        MyShortcut(QKeySequence("Alt+I"), self, activated=lambda: self.limit_spin.setFocus())
+        MyShortcut(QKeySequence("Alt+Q"), self, activated=lambda: self.query_btn.setFocus())
+        MyShortcut(QKeySequence("Alt+M"), self, activated=self.toggle_reminder_for_selected)
+        MyShortcut(QKeySequence("Alt+B"), self, activated=self.show_reminder_bag)
+        MyShortcut(QKeySequence("Ctrl+N"), self, activated=self.open_new_window_with_current_query)
+        MyShortcut(QKeySequence("Ctrl+Shift+N"), self, activated=self.open_new_window_from_selection)
+        self.child_windows = []
+
+    def __init__(self, ui_scale=1.5, font_size=None):
+        super().__init__()
+        self.ui_scale = float(ui_scale) if ui_scale else 1.0
+        self.font_size = int(font_size) if font_size else max(14, int(round(15 * self.ui_scale)))
+        self._apply_global_styles()
         import os
         self.batch_dir = os.path.abspath(BATCHES_DIR)
         logging.info("Batches directory: %s", self.batch_dir)
@@ -337,28 +365,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Tamil Splits - Qt Client")
         central = QWidget()
         self.setCentralWidget(central)
-        # Main vertical layout
         main_layout = QVBoxLayout(central)
-
-        # Left container: all existing controls + table + find/replace
-        left_container = QWidget()
-        left_layout = QVBoxLayout(left_container)
-        left_layout.addLayout(self.build_prefix_suffix_regex_panel())
-        left_layout.addLayout(self.build_query_parameters_panel())
-        left_layout.addLayout(self.build_sort_panel())
-        left_layout.addWidget(self.build_table_panel())
-        left_layout.addLayout(self.build_find_replace_panel())
-
-        # Right: summary panel
-        self.summary_widget = self.build_summary_panel()
-
-        # Splitter to keep summary narrow
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_container)
-        splitter.addWidget(self.summary_widget)
-        splitter.setStretchFactor(0, 4)  # main content gets more space
-        splitter.setStretchFactor(1, 1)  # summary stays narrower
-
+        splitter = self._build_main_splitter()
         main_layout.addWidget(splitter)
         self.update_summary()
         WINDOWS.add(self)
@@ -367,22 +375,7 @@ class MainWindow(QMainWindow):
         logging.info("Loaded %d reminder word(s)", len(self.reminders))
 
         # (Query button connected earlier in the params panel.)
-        from PyQt5.QtGui import QKeySequence
-        commit_shortcut = MyShortcut(QKeySequence("Ctrl+S"), self, activated=self.commit_edits)
-        # Focus Shortcuts
-        MyShortcut(QKeySequence("Alt+P"), self, activated=lambda: self.prefix_edit.setFocus())
-        MyShortcut(QKeySequence("Alt+S"), self, activated=lambda: self.suffix_edit.setFocus())
-        MyShortcut(QKeySequence("Alt+R"), self, activated=lambda: self.regex_edit.setFocus())
-        MyShortcut(QKeySequence("Alt+F"), self, activated=lambda: self.find_edit.setFocus())
-        MyShortcut(QKeySequence("Alt+G"), self, activated=lambda: self.replace_edit.setFocus())
-        MyShortcut(QKeySequence("Alt+L"), self, activated=lambda: self.length_edit.setFocus())
-        MyShortcut(QKeySequence("Alt+I"), self, activated=lambda: self.limit_spin.setFocus())
-        MyShortcut(QKeySequence("Alt+Q"), self, activated=lambda: self.query_btn.setFocus())
-        MyShortcut(QKeySequence("Alt+M"), self, activated=self.toggle_reminder_for_selected)  # toggle reminder on selection
-        MyShortcut(QKeySequence("Alt+B"), self, activated=self.show_reminder_bag)             # show reminder bag
-
-        # Keep spawned windows alive
-        self.child_windows = []
+        self._init_shortcuts()
 
         # New window shortcuts
         from PyQt5.QtGui import QKeySequence
@@ -522,58 +515,6 @@ class MainWindow(QMainWindow):
         self.populate_table_from_results(combined)
         self.update_summary()
 
-        # Always include ~X% curated (GUI-controlled), at least 1 if any curated exist
-        curated_ratio = float(self.curated_ratio_spin.value()) / 100.0
-        if curated_ratio <= 0.0:
-            combined = new_rows[:q["limit"]]
-            shown_new = len(combined)
-            shown_curated = 0
-            self.log_ui_event("FILTER_CURATED", {
-                "queried": len(raw),
-                "new": len(new_rows),
-                "curated": len(old_rows),
-                "shown_new": shown_new,
-                "shown_curated": shown_curated,
-                "curated_ratio": curated_ratio
-            })
-            self.populate_table_from_results(combined)
-            self.update_summary()
-            return
-        curated_quota = int(math.floor(limit * curated_ratio))
-        # Do not force a minimum when ratio is zero; small non-zero ratios may still round to 0.
-
-        # Randomly pick curated rows for this query
-        curated_pick = []
-        if old_rows and curated_quota > 0:
-            curated_pick = random.sample(old_rows, k=min(curated_quota, len(old_rows)))
-
-        # Fill remaining with new (front-load new)
-        remaining_slots = max(0, limit - len(curated_pick))
-        new_pick = new_rows[:remaining_slots]
-
-        # If still short, backfill with additional curated (excluding those already picked)
-        leftover = max(0, limit - (len(curated_pick) + len(new_pick)))
-        if leftover > 0:
-            remaining_old = [r for r in old_rows if r not in curated_pick]
-            if remaining_old:
-                curated_pick += random.sample(remaining_old, k=min(leftover, len(remaining_old)))
-
-        # Final order: new first, then curated
-        combined = (new_pick + curated_pick)[:limit]
-
-        shown_new = len(new_pick)
-        shown_curated = len(curated_pick)
-        self.log_ui_event("FILTER_CURATED", {
-            "queried": len(raw),
-            "new": len(new_rows),
-            "curated": len(old_rows),
-            "shown_new": shown_new,
-            "shown_curated": shown_curated,
-            "curated_ratio": curated_ratio
-        })
-        self.populate_table_from_results(combined)
-        self.update_summary()
-
     def build_tsv_lines(self):
         """
         Builds a list of strings representing TSV lines from the current table data.
@@ -620,15 +561,7 @@ class MainWindow(QMainWindow):
             finally:
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
-    def append_summary_ledger(self, batch_name):
-        """
-        Append a compact summary row to the ledger:
-          id="__SUMMARY__", word=<total_words>,
-          splits="curated=<n_cur>;remaining=<n_rem>;entries=<n_entries>",
-          notes="len:{glen}:{cur}/{rem},..."
-        """
-        import os, fcntl, time
-        from collections import Counter
+    def _compute_summary_snapshot(self):
         glen_map = {}
         index_words = set()
         for w, fr, gl in self.word_index.words:
@@ -641,8 +574,20 @@ class MainWindow(QMainWindow):
         total_curations = getattr(self.curated, "total_curation_entries", 0)
         curated_len = Counter(glen_map[w] for w in curated_in_index if w in glen_map)
         remaining_len = Counter(glen_map[w] for w in remaining_set if w in glen_map)
-        lens = sorted(set(curated_len.keys()) | set(remaining_len.keys()))
-        lens_notes = ",".join(f"{gl}:{curated_len.get(gl,0)}/{remaining_len.get(gl,0)}" for gl in lens)
+        return {
+            "total_words": total_words,
+            "curated_distinct": len(curated_in_index),
+            "remaining_distinct": len(remaining_set),
+            "curation_entries": total_curations,
+            "length_distribution": {
+                "curated": dict(curated_len),
+                "remaining": dict(remaining_len)
+            }
+        }
+
+    def append_summary_ledger(self, batch_name):
+        import os, fcntl, time, json
+        summary = self._compute_summary_snapshot()
         ledger_path = LEDGER_PATH
         os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
         write_header = not os.path.exists(ledger_path) or os.path.getsize(ledger_path) == 0
@@ -652,21 +597,8 @@ class MainWindow(QMainWindow):
             try:
                 if write_header:
                     lf.write("\t".join(["timestamp", "batch", "id", "word", "splits", "notes"]) + "\n")
-                import json
-                curated_len = Counter(glen_map[w] for w in curated_in_index if w in glen_map)
-                remaining_len = Counter(glen_map[w] for w in remaining_set if w in glen_map)
-                summary = {
-                    "total_words": total_words,
-                    "curated_distinct": len(curated_in_index),
-                    "remaining_distinct": len(remaining_set),
-                    "curation_entries": total_curations,
-                    "length_distribution": {
-                        "curated": dict(curated_len),
-                        "remaining": dict(remaining_len)
-                    }
-                }
                 rec_id = "__SUMMARY__"
-                word = str(total_words)
+                word = str(summary["total_words"])
                 splits = ""
                 notes = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
                 lf.write(f"{ts}\t{batch_name}\t{rec_id}\t{word}\t{splits}\t{notes}\n")
@@ -756,34 +688,13 @@ class MainWindow(QMainWindow):
         if not getattr(self, "dirty", False):
             QMessageBox.information(self, "Commit", "No edits since last save.")
             return
-        # Collect only rows whose 'splits' were edited
-        edited_rows = []
-        for row in range(self.table.rowCount()):
-            id_item = self.table.item(row, 0)
-            sp_item = self.table.item(row, 2)
-            if not id_item or not sp_item:
-                continue
-            rec_id = id_item.text()
-            curr_splits = sp_item.text()
-            orig = self.original_splits.get(rec_id, "")
-            if curr_splits != orig:
-                word = (self.table.item(row, 1).text() if self.table.item(row, 1) else "")
-                freq = (self.table.item(row, 3).text() if self.table.item(row, 3) else "")
-                glen = (self.table.item(row, 4).text() if self.table.item(row, 4) else "")
-                notes = (self.table.item(row, 5).text() if self.table.item(row, 5) else "")
-                edited_rows.append([rec_id, word, curr_splits, freq, glen, notes])
+        edited_rows = self._collect_edited_rows()
         if not edited_rows:
             QMessageBox.information(self, "Commit", "No edits to save.")
             return
-        default_batch_name = self.generate_batch_name()
-        batch_name = default_batch_name
-        tsv_lines = ["\t".join(["id","word","splits","freq","glen","notes"])]
-        tsv_lines.extend("\t".join(r) for r in edited_rows)
-        import os
-        filepath = os.path.abspath(os.path.join(self.batch_dir, batch_name))
+        batch_name = self.generate_batch_name()
         try:
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write("\n".join(tsv_lines) + "\n")
+            filepath, tsv_lines = self._write_batch_file(batch_name, edited_rows)
             self.update_ledger(tsv_lines, batch_name)
             self._refresh_curated_and_broadcast(tsv_lines)
             self.append_summary_ledger(batch_name)
@@ -824,48 +735,43 @@ class MainWindow(QMainWindow):
         self.dirty = False
 
 
+    def _normalize_result_tuple(self, rec):
+        """Return (word, freq, glen, splits) from a heterogeneous rec tuple."""
+        if len(rec) == 3:
+            word, freq, glen = rec
+            splits = word
+        elif len(rec) >= 5:
+            word = rec[1]; splits = rec[2] if rec[2] else rec[1]; freq = rec[3]; glen = rec[4]
+        elif len(rec) == 4:
+            word = rec[1]; freq = rec[2]; glen = rec[3]; splits = word
+        else:
+            return None
+        return word, freq, glen, splits
+
+    def _insert_result_row(self, row, rec_id, word, splits, freq, glen):
+        self.table.insertRow(row)
+        self.table.setItem(row, 0, QTableWidgetItem(rec_id))
+        self.table.setItem(row, 1, QTableWidgetItem(word))
+        self.table.setItem(row, 2, QTableWidgetItem(splits))
+        self.table.setItem(row, 3, QTableWidgetItem(str(freq)))
+        self.table.setItem(row, 4, QTableWidgetItem(str(glen)))
+        self.table.setItem(row, 5, QTableWidgetItem(""))
+        self.original_splits[rec_id] = splits
+
     def populate_table_from_results(self, results):
-        # Suppress change tracking while loading
         self.suppress_item_changed = True
         self.original_splits = {}
         self.edited_ids = set()
         self.table.setColumnCount(6)
         self.table.setRowCount(0)
         for rec in results:
-            # Normalize inputs: extract word, freq, glen, optional splits
-            if len(rec) == 3:
-                word, freq, glen = rec
-                splits = word  # default splits to word
-            elif len(rec) >= 5:
-                # Assume 7-col order from prior formats: id, word, splits, freq, glen, ...
-                word = rec[1]
-                splits = rec[2] if rec[2] else rec[1]
-                freq = rec[3]
-                glen = rec[4]
-            elif len(rec) == 4:
-                # Assume order: id, word, freq, glen
-                word = rec[1]
-                freq = rec[2]
-                glen = rec[3]
-                splits = word
-            else:
+            norm = self._normalize_result_tuple(rec)
+            if not norm:
                 continue
-
+            word, freq, glen, splits = norm
             row = self.table.rowCount()
-            self.table.insertRow(row)
-            rec_id = str(row + 1)  # numeric (stringified) sequential id
-
-            # 6-column order: id, word, splits, freq, glen, notes
-            self.table.setItem(row, 0, QTableWidgetItem(rec_id))
-            self.table.setItem(row, 1, QTableWidgetItem(word))
-            self.table.setItem(row, 2, QTableWidgetItem(splits))
-            self.table.setItem(row, 3, QTableWidgetItem(str(freq)))
-            self.table.setItem(row, 4, QTableWidgetItem(str(glen)))
-            self.table.setItem(row, 5, QTableWidgetItem(""))  # notes
-
-            # Record original splits for edit tracking
-            self.original_splits[rec_id] = splits
-
+            rec_id = str(row + 1)
+            self._insert_result_row(row, rec_id, word, splits, freq, glen)
         self.table.resizeColumnsToContents()
         self.suppress_item_changed = False
 
@@ -1009,50 +915,41 @@ class MainWindow(QMainWindow):
 
 
 
+    def _selected_split_indexes(self):
+        indexes = [ix for ix in self.table.selectedIndexes() if ix.column() == 2]
+        if indexes:
+            return indexes
+        # If no cells are selected, target the entire splits column.
+        return [self.table.model().index(row, 2) for row in range(self.table.rowCount())]
+
+    def _replace_in_indexes(self, indexes, find_text, replace_text):
+        count = 0
+        for ix in indexes:
+            row = ix.row()
+            item = self.table.item(row, 2)
+            if not item:
+                continue
+            original = item.text()
+            new_text = original.replace(find_text, replace_text)
+            if new_text != original:
+                item.setText(new_text)
+                count += 1
+        return count
+
     def apply_replace_to_cell(self):
-        """
-        Applies a find and replace operation on the currently selected cell(s)
-        in the splits column (column index 2). If no cells are selected, the replacement is applied to all cells in that column.
-        """
         find_text = self.find_edit.text()
         replace_text = self.replace_edit.text()
         normalized_replace = replace_text.replace(" ", TOKEN_DELIMITER)
         if not find_text:
             QMessageBox.warning(self, "Find/Replace", "Please enter text to find.")
             return
-
-        indexes = self.table.selectedIndexes()
-        # Filter for cells in column 2 (the splits column)
-        target_indexes = [ix for ix in indexes if ix.column() == 2]
-
-        if not target_indexes:
-            # No cells are selected. Replace in all cells in the splits column.
-            target_indexes = []
-            for row in range(self.table.rowCount()):
-                # Obtain the model index for column 2
-                target_indexes.append(self.table.model().index(row, 2))
-
-        if not target_indexes:
+        indexes = self._selected_split_indexes()
+        if not indexes:
             QMessageBox.warning(self, "Find/Replace", "No cells available in the splits column.")
             return
-
-        count_replaced = 0
-        for ix in target_indexes:
-            row = ix.row()
-            item = self.table.item(row, 2)
-            if item:
-                original_text = item.text()
-                new_text = original_text.replace(find_text, normalized_replace)
-                if new_text != original_text:
-                    count_replaced += 1
-                item.setText(new_text)
-
+        count_replaced = self._replace_in_indexes(indexes, find_text, normalized_replace)
         if count_replaced > 0:
-            self.log_ui_event("REPLACE", {
-                "find": find_text,
-                "replace": normalized_replace,
-                "cells_modified": count_replaced
-            })
+            self.log_ui_event("REPLACE", {"find": find_text, "replace": normalized_replace, "cells_modified": count_replaced})
             QMessageBox.information(self, "Find/Replace", f"Replacement applied to {count_replaced} cell(s).")
         else:
             QMessageBox.information(self, "Find/Replace", "No replacements were made (find text not found).")
@@ -1185,6 +1082,18 @@ class MainWindow(QMainWindow):
         panel.addLayout(regex_row)
         return panel
 
+    def _add_new_window_buttons(self, row_layout):
+        new_win_btn = QPushButton("New Window")
+        new_win_btn.setToolTip("Open a new window with current query")
+        new_win_btn.setFocusPolicy(Qt.NoFocus)
+        new_win_btn.clicked.connect(self.open_new_window_with_current_query)
+        new_win_sel_btn = QPushButton("New Window from Selection")
+        new_win_sel_btn.setToolTip("Use selected text as prefix/suffix/regex in a new window")
+        new_win_sel_btn.setFocusPolicy(Qt.NoFocus)
+        new_win_sel_btn.clicked.connect(self.open_new_window_from_selection)
+        row_layout.addWidget(new_win_btn)
+        row_layout.addWidget(new_win_sel_btn)
+
     def build_query_parameters_panel(self):
         """
         Returns a QHBoxLayout for query parameters:
@@ -1220,19 +1129,8 @@ class MainWindow(QMainWindow):
         params_row.addWidget(self.curated_ratio_spin)
         params_row.addWidget(self.query_btn)
         params_row.addWidget(self.query_btn)
-
-        new_win_btn = QPushButton("New Window")
-        new_win_btn.setToolTip("Open a new window with current query")
-        new_win_btn.setFocusPolicy(Qt.NoFocus)
-        new_win_btn.clicked.connect(self.open_new_window_with_current_query)
-
-        new_win_sel_btn = QPushButton("New Window from Selection")
-        new_win_sel_btn.setToolTip("Use selected text as prefix/suffix/regex in a new window")
-        new_win_sel_btn.setFocusPolicy(Qt.NoFocus)
-        new_win_sel_btn.clicked.connect(self.open_new_window_from_selection)
-
-        params_row.addWidget(new_win_btn)
-        params_row.addWidget(new_win_sel_btn)
+    
+        self._add_new_window_buttons(params_row)
         return params_row
 
     def build_sort_panel(self):
@@ -1397,24 +1295,40 @@ class MainWindow(QMainWindow):
         win.show()
         self.log_ui_event("NEW_WINDOW", params)
 
-    def open_new_window_from_selection(self):
-        """Spawn a new window from selected text in any input field."""
-        candidates = []
+    def _collect_selected_text_from_fields(self):
         for field in (self.prefix_edit, self.suffix_edit, self.regex_edit, self.find_edit, self.replace_edit):
             if isinstance(field, PhoneticLineEdit) and field.hasSelectedText():
                 sel = field.selectedText().strip()
                 if sel:
-                    candidates.append(sel)
-        if not candidates:
-            w = QApplication.focusWidget()
-            if isinstance(w, PhoneticLineEdit):
-                t = (w.selectedText() if w.hasSelectedText() else w.text()).strip()
-                if t:
-                    candidates.append(t)
-        if not candidates:
+                    return sel
+        w = QApplication.focusWidget()
+        if isinstance(w, PhoneticLineEdit):
+            t = (w.selectedText() if w.hasSelectedText() else w.text()).strip()
+            if t:
+                return t
+        return ""
+
+    def _apply_choice_to_params(self, choice, text, base_params):
+        p = dict(base_params)
+        if choice == "prefix":
+            p["prefix"] = text; p["suffix"] = ""; p["regex"] = ""
+        elif choice == "suffix":
+            p["suffix"] = text; p["prefix"] = ""; p["regex"] = ""
+        elif choice == "regex":
+            p["regex"] = text; p["prefix"] = ""; p["suffix"] = ""
+        elif choice == "not prefix":
+            p["prefix_not"] = text
+        elif choice == "not suffix":
+            p["suffix_not"] = text
+        elif choice == "not regex":
+            p["regex_not"] = text
+        return p
+
+    def open_new_window_from_selection(self):
+        text = self._collect_selected_text_from_fields()
+        if not text:
             QMessageBox.information(self, "New Window", "No text selected or present in the active field.")
             return
-        text = candidates[0]
         choice, ok = QInputDialog.getItem(
             self, "New Window", "Use text as:",
             ["prefix", "suffix", "regex", "not prefix", "not suffix", "not regex"],
@@ -1422,19 +1336,7 @@ class MainWindow(QMainWindow):
         )
         if not ok:
             return
-        params = self._collect_query_params()
-        if choice == "prefix":
-            params["prefix"] = text; params["suffix"] = ""; params["regex"] = ""
-        elif choice == "suffix":
-            params["suffix"] = text; params["prefix"] = ""; params["regex"] = ""
-        elif choice == "regex":
-            params["regex"] = text; params["prefix"] = ""; params["suffix"] = ""
-        elif choice == "not prefix":
-            params["prefix_not"] = text
-        elif choice == "not suffix":
-            params["suffix_not"] = text
-        elif choice == "not regex":
-            params["regex_not"] = text
+        params = self._apply_choice_to_params(choice, text, self._collect_query_params())
         win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size)
         win._apply_query_params(params)
         win.query_words()
@@ -1463,6 +1365,7 @@ class MainWindow(QMainWindow):
         self.child_windows.append(win)
         win.show()
         self.log_ui_event("NEW_WINDOW_CONTEXT", {"kind": kind, "text": text, **params})
+
     def on_table_context_menu(self, pos):
         """Right-click on table: open menu to launch a new window using the clicked cell text as prefix/suffix/regex."""
         index = self.table.indexAt(pos)
@@ -1492,45 +1395,33 @@ class MainWindow(QMainWindow):
             menu.addAction(act)
         menu.exec_(self.table.viewport().mapToGlobal(pos))
 
-    def update_summary(self):
-        # Build a mapping: word -> glen from the index
+    def _compute_summary_sets(self):
         glen_map = {}
         index_words = set()
         for w, fr, gl in self.word_index.words:
-            index_words.add(w)
-            glen_map[w] = gl
-
-        total_words = len(index_words)
-
-        # Use curated index sets; restrict to words present in index
+            index_words.add(w); glen_map[w] = gl
         curated_set = getattr(self.curated, "curated_words", set())
         curated_in_index = {w for w in curated_set if w in index_words}
-        curated_distinct = len(curated_in_index)
-
         remaining_set = index_words - curated_in_index
-        remaining_distinct = len(remaining_set)
+        return glen_map, index_words, curated_in_index, remaining_set
 
-        total_curations = getattr(self.curated, "total_curation_entries", 0)
-
-        # Update labels
+    def _update_summary_labels(self, total_words, curated_distinct, remaining_distinct, total_curations):
         self.sum_total_words.setText(f"Total words: {total_words}")
         self.sum_curated_words.setText(f"Curated (distinct): {curated_distinct}")
         self.sum_remaining_words.setText(f"Remaining (distinct): {remaining_distinct}")
         self.sum_total_curations.setText(f"Curation entries: {total_curations}")
 
-        # Length distributions
+    def _populate_length_table(self, glen_map, curated_in_index, remaining_set):
         curated_len = Counter()
         for w in curated_in_index:
             gl = glen_map.get(w)
             if gl is not None:
                 curated_len[gl] += 1
-
         remaining_len = Counter()
         for w in remaining_set:
             gl = glen_map.get(w)
             if gl is not None:
                 remaining_len[gl] += 1
-
         lengths = sorted(set(curated_len.keys()) | set(remaining_len.keys()))
         self.len_table.setRowCount(0)
         for gl in lengths:
@@ -1539,6 +1430,15 @@ class MainWindow(QMainWindow):
             self.len_table.setItem(row, 0, QTableWidgetItem(str(gl)))
             self.len_table.setItem(row, 1, QTableWidgetItem(str(curated_len.get(gl, 0))))
             self.len_table.setItem(row, 2, QTableWidgetItem(str(remaining_len.get(gl, 0))))
+
+    def update_summary(self):
+        glen_map, index_words, curated_in_index, remaining_set = self._compute_summary_sets()
+        total_words = len(index_words)
+        curated_distinct = len(curated_in_index)
+        remaining_distinct = len(remaining_set)
+        total_curations = getattr(self.curated, "total_curation_entries", 0)
+        self._update_summary_labels(total_words, curated_distinct, remaining_distinct, total_curations)
+        self._populate_length_table(glen_map, curated_in_index, remaining_set)
 
 if __name__ == "__main__":
     import argparse, os
