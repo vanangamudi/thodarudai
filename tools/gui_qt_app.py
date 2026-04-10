@@ -422,14 +422,14 @@ class MainWindow(QMainWindow):
 
         return min_len, max_len
 
-    def query_words(self):
-        self.curated.maybe_reload_on_change()
-        # Get values from UI fields.
+    def _read_query_fields(self):
+        """Read and normalize current query fields, including negative filters and curated ratio."""
         prefix = self.prefix_edit.text().strip()
         suffix = self.suffix_edit.text().strip()
         regex = self.regex_edit.text().strip()
-        length_spec = self.length_edit.text().strip()  # new length specification field
-        limit = self.limit_spin.value()
+        length_spec = self.length_edit.text().strip()
+        limit = int(self.limit_spin.value())
+        curated_ratio = float(self.curated_ratio_spin.value()) / 100.0
         prefix_not = self.prefix_not_edit.text().strip() if hasattr(self, "prefix_not_edit") else ""
         suffix_not = self.suffix_not_edit.text().strip() if hasattr(self, "suffix_not_edit") else ""
         regex_not = self.regex_not_edit.text().strip() if hasattr(self, "regex_not_edit") else ""
@@ -440,41 +440,92 @@ class MainWindow(QMainWindow):
                 neg_rx = re.compile(regex_not)
             except re.error:
                 neg_rx = None
-
-        min_len, max_len = self.parse_length_spec(length_spec)
-
-        self.log_ui_event("QUERY", {
+        return {
             "prefix": prefix, "suffix": suffix, "regex": regex,
-            "prefix_not": prefix_not, "suffix_not": suffix_not, "regex_not": regex_not,
-            "length_spec": length_spec, "limit": limit
+            "length_spec": length_spec, "limit": limit, "curated_ratio": curated_ratio,
+            "prefix_not": prefix_not, "suffix_not": suffix_not, "regex_not": regex_not, "neg_rx": neg_rx
+        }
+
+    def _probe_raw_results(self, q):
+        """Fetch raw rows (word,freq,glen) with a larger probe limit to allow filtering."""
+        min_len, max_len = self.parse_length_spec(q["length_spec"])
+        probe_limit = min(q["limit"] * 5, max(q["limit"] + 500, 5000))
+        return self.word_index.query_words(
+            prefix=q["prefix"], suffix=q["suffix"],
+            min_len=min_len, max_len=max_len,
+            limit=probe_limit, offset=0, regex=q["regex"]
+        )
+
+    def _apply_negative_filters(self, rows, q):
+        """Filter out rows matching any negative conditions."""
+        out = []
+        for w, fr, gl in rows:
+            if (q["prefix_not"] and w.startswith(q["prefix_not"])) or \
+               (q["suffix_not"] and w.endswith(q["suffix_not"])) or \
+               (q["neg_rx"] and q["neg_rx"].search(w)):
+                continue
+            out.append((w, fr, gl))
+        return out
+
+    def _partition_new_old(self, rows):
+        """Split into new (uncurated) and old (curated) lists."""
+        new_rows, old_rows = [], []
+        for w, fr, gl in rows:
+            (new_rows if not self.curated.is_curated(w) else old_rows).append((w, fr, gl))
+        return new_rows, old_rows
+
+    def _pick_curated_and_new(self, new_rows, old_rows, limit, curated_ratio):
+        """Select rows honoring curated ratio; with 0.0 never include curated backfill."""
+        if curated_ratio <= 0.0:
+            combined = new_rows[:limit]
+            return combined, len(combined), 0
+        curated_quota = int(math.floor(limit * curated_ratio))
+        curated_pick = []
+        if old_rows and curated_quota > 0:
+            curated_pick = random.sample(old_rows, k=min(curated_quota, len(old_rows)))
+        remaining_slots = max(0, limit - len(curated_pick))
+        new_pick = new_rows[:remaining_slots]
+        leftover = max(0, limit - (len(curated_pick) + len(new_pick)))
+        if leftover > 0:
+            remaining_old = [r for r in old_rows if r not in curated_pick]
+            if remaining_old:
+                curated_pick += random.sample(remaining_old, k=min(leftover, len(remaining_old)))
+        combined = (new_pick + curated_pick)[:limit]
+        return combined, len(new_pick), len(curated_pick)
+
+    def _log_query_event(self, q):
+        self.log_ui_event("QUERY", {
+            "prefix": q["prefix"], "suffix": q["suffix"], "regex": q["regex"],
+            "prefix_not": q["prefix_not"], "suffix_not": q["suffix_not"], "regex_not": q["regex_not"],
+            "length_spec": q["length_spec"], "limit": q["limit"]
         })
 
-        # Probe more than limit to have headroom for filtering curated words
-        probe_limit = min(limit * 5, max(limit + 500, 5000))
-        raw = self.word_index.query_words(
-            prefix=prefix,
-            suffix=suffix,
-            min_len=min_len,
-            max_len=max_len,
-            limit=probe_limit,
-            offset=0,
-            regex=regex
-        )
-        # Partition results into new (uncurated) and curated
-        new_rows = []
-        old_rows = []
-        for w, fr, gl in raw:
-            # Negative filters: exclude if any negative condition matches
-            if (prefix_not and w.startswith(prefix_not)) or \
-               (suffix_not and w.endswith(suffix_not)) or \
-               (neg_rx and neg_rx.search(w)):
-                continue
-            (new_rows if not self.curated.is_curated(w) else old_rows).append((w, fr, gl))
+    def _log_filter_stats(self, raw, new_rows, old_rows, shown_new, shown_curated, curated_ratio):
+        self.log_ui_event("FILTER_CURATED", {
+            "queried": len(raw),
+            "new": len(new_rows),
+            "curated": len(old_rows),
+            "shown_new": shown_new,
+            "shown_curated": shown_curated,
+            "curated_ratio": curated_ratio
+        })
+
+    def query_words(self):
+        self.curated.maybe_reload_on_change()
+        q = self._read_query_fields()
+        self._log_query_event(q)
+        raw = self._probe_raw_results(q)
+        eligible = self._apply_negative_filters(raw, q)
+        new_rows, old_rows = self._partition_new_old(eligible)
+        combined, shown_new, shown_curated = self._pick_curated_and_new(new_rows, old_rows, q["limit"], q["curated_ratio"])
+        self._log_filter_stats(raw, new_rows, old_rows, shown_new, shown_curated, q["curated_ratio"])
+        self.populate_table_from_results(combined)
+        self.update_summary()
 
         # Always include ~X% curated (GUI-controlled), at least 1 if any curated exist
         curated_ratio = float(self.curated_ratio_spin.value()) / 100.0
         if curated_ratio <= 0.0:
-            combined = new_rows[:limit]
+            combined = new_rows[:q["limit"]]
             shown_new = len(combined)
             shown_curated = 0
             self.log_ui_event("FILTER_CURATED", {
@@ -643,6 +694,64 @@ class MainWindow(QMainWindow):
        safe_len = self.sanitize_component(length_spec)
        return f"{timestamp}-{safe_prefix}-{safe_len}-{safe_suffix}.tsv"
 
+    def _collect_edited_rows(self):
+        """Return list of [id, word, splits, freq, glen, notes] for rows whose splits changed."""
+        edited_rows = []
+        for row in range(self.table.rowCount()):
+            id_item = self.table.item(row, 0)
+            sp_item = self.table.item(row, 2)
+            if not id_item or not sp_item:
+                continue
+            rec_id = id_item.text()
+            curr_splits = sp_item.text()
+            orig = self.original_splits.get(rec_id, "")
+            if curr_splits != orig:
+                word = (self.table.item(row, 1).text() if self.table.item(row, 1) else "")
+                freq = (self.table.item(row, 3).text() if self.table.item(row, 3) else "")
+                glen = (self.table.item(row, 4).text() if self.table.item(row, 4) else "")
+                notes = (self.table.item(row, 5).text() if self.table.item(row, 5) else "")
+                edited_rows.append([rec_id, word, curr_splits, freq, glen, notes])
+        return edited_rows
+
+    def _write_batch_file(self, batch_name, edited_rows):
+        """Write batch TSV file and return (filepath, tsv_lines)."""
+        tsv_lines = ["\t".join(["id","word","splits","freq","glen","notes"])]
+        tsv_lines.extend("\t".join(r) for r in edited_rows)
+        filepath = os.path.abspath(os.path.join(self.batch_dir, batch_name))
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("\n".join(tsv_lines) + "\n")
+        return filepath, tsv_lines
+
+    def _refresh_curated_and_broadcast(self, tsv_lines):
+        """Update curated index from batch, reload from disk, then refresh summary in all windows."""
+        self.curated.update_from_batch(tsv_lines)
+        self.curated.reload()
+        for win in list(WINDOWS):
+            try:
+                win.update_summary()
+            except Exception:
+                pass
+
+    def _update_baseline_after_save(self, edited_rows):
+        """Update original_splits baseline and clear edited markers/backgrounds for saved rows."""
+        edited_ids_set = set()
+        for rec_id, word, new_splits, freq, glen, notes in edited_rows:
+            self.original_splits[rec_id] = new_splits
+            edited_ids_set.add(rec_id)
+        for row in range(self.table.rowCount()):
+            id_item = self.table.item(row, 0)
+            if not id_item:
+                continue
+            rid = id_item.text()
+            if rid in edited_ids_set:
+                for c in range(self.table.columnCount()):
+                    it = self.table.item(row, c)
+                    if it:
+                        it.setBackground(Qt.white)
+                if rid in self.edited_ids:
+                    self.edited_ids.remove(rid)
+        self.dirty = bool(self.edited_ids)
+
     def commit_edits(self):
         if not getattr(self, "dirty", False):
             QMessageBox.information(self, "Commit", "No edits since last save.")
@@ -676,40 +785,12 @@ class MainWindow(QMainWindow):
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write("\n".join(tsv_lines) + "\n")
             self.update_ledger(tsv_lines, batch_name)
-            self.curated.update_from_batch(tsv_lines)
-            # Ensure curated index reflects any on-disk state (paranoid correctness)
-            self.curated.reload()
-            # Append one-line summary into the ledger for this batch
+            self._refresh_curated_and_broadcast(tsv_lines)
             self.append_summary_ledger(batch_name)
             self.log_ui_event("COMMIT", {"batch": batch_name, "saved_rows": len(edited_rows)})
             logging.info("Saved batch file to %s", filepath)
             QMessageBox.information(self, "Commit", f"Saved {len(edited_rows)} edited row(s) to {filepath}")
-            # Refresh summary in all open windows (shared curated index updated)
-            for win in list(WINDOWS):
-                try:
-                    win.update_summary()
-                except Exception:
-                    pass
-            # Update baseline to prevent re-saving unchanged rows
-            edited_ids_set = set()
-            for rec_id, word, new_splits, freq, glen, notes in edited_rows:
-                self.original_splits[rec_id] = new_splits
-                edited_ids_set.add(rec_id)
-            # Clear edited markers and reset row backgrounds for those rows
-            for row in range(self.table.rowCount()):
-                id_item = self.table.item(row, 0)
-                if not id_item:
-                    continue
-                rid = id_item.text()
-                if rid in edited_ids_set:
-                    for c in range(self.table.columnCount()):
-                        it = self.table.item(row, c)
-                        if it:
-                            it.setBackground(Qt.white)
-                    if rid in self.edited_ids:
-                        self.edited_ids.remove(rid)
-            # Reset dirty flag
-            self.dirty = bool(self.edited_ids)
+            self._update_baseline_after_save(edited_rows)
             self.update_summary()
         except Exception as e:
             QMessageBox.critical(self, "Commit Error", str(e))
