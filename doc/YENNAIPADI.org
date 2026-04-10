@@ -1,0 +1,146 @@
+* Introduction
+
+This tool helps you curate tokenization “splits” for Tamil words at scale. You can search a large corpus, edit how each word should be split (e.g., syllable-like or morpheme-like units separated with =-=), and save only the edited rows. Over time, these curation batches become:
+- a high-quality lookup table for tokenization, and
+- a dataset to train a small LSTM seq2seq “tokenizer” model, if you want model assistance later.
+
+The GUI focuses on fast search (by prefix/suffix/regex), bulk-editing, and workflow ergonomics (reminder bag, multi-window).
+
+** Core ideas
+
+- =word-index.tsv= is your searchable corpus index with columns: =word  freq  glen=.
+- “Splits” are your curated tokenizations, typically joined by =-= (e.g., =செந்-தா-ம-ரை=).
+- Each save writes a batch TSV under =<base_dir>/<profile>/batches/= with header: =id  word  splits  freq  glen  notes=.
+- A Bloom-filter-based “curation index” reads all =batches/*.tsv= so queries prefer new (uncurated) words first.
+- Two query backends:
+  - =list= indexer (default): optimized in-memory list with prefix/suffix indexes.
+  - =trie= indexer: fast mmap-backed forward and reverse tries built once from =word-index.tsv=.
+
+** What you’ll need
+
+- Python 3, PyQt5, and =arichuvadi=.
+- A corpus to build =word-index.tsv= (or an existing one).
+- Optional: =tqdm= (for progress bars in trie build), =torch= (if you plan to train/evaluate the LSTM tokenizer).
+
+** First-time setup
+
+1) Choose a profile and base directory (e.g., ~--profile default --base_dir ~/thodar-data~). All runtime files live under =<base_dir>/<profile>/=.
+
+2) Build the searchable word index (if you don’t already have one):
+   - ~python -m tools.build_word_index input1.tsv input2.tsv > <base_dir>/<profile>/word-index.tsv~
+
+3) (Optional) Build mmap-backed tries for fast prefix/suffix search:
+   - ~python -m tools.trie_word_indexer --profile default --base_dir <dir> --build --overwrite --pbar~
+
+** Launch the GUI
+
+- Classic list indexer:
+  - ~python -m tools.gui_qt_app --profile default --base_dir <dir>~
+- Trie indexer:
+  - ~python -m tools.gui_qt_app --profile default --base_dir <dir> --indexer trie~
+  - By default it looks for =fwd.trie= and =rev.trie= alongside =word-index.tsv=. Override with ~--fwd_trie~ and ~--rev_trie~ if needed.
+
+You can open multiple windows. The tool shares one loaded index per process (so additional windows are lightweight).
+
+** Daily workflow
+
+1) Search
+   - Type into =Prefix= or =Suffix=, optionally =Regex=. You can also add negative filters (=Exclude:=) for prefix, suffix, or regex.
+   - Set length range in =Length= (e.g., =8-= means glen ≥ 8).
+   - Adjust =Limit= and =Curated %= (percentage of old/curated words to include; set to 0 for “new only”).
+   - Click =Query=.
+   - The tool logs =QUERY= parameters, result stats, and =QUERY_TIME= with indexer kind and elapsed ms.
+
+2) Prioritization
+   - Results favor uncurated words first; then backfill curated items according to =Curated %=.
+   - With curated ratio =0=, curated words are never included (you may get fewer than =Limit= results).
+
+3) Edit
+   - Change “splits” (column index 2). Rows with edits are highlighted. The tool saves only edited rows later.
+   - For bulk changes, use the Find/Replace panel; spaces in Replace are normalized to =-=.
+   - Shortcuts: Alt+P/S/R/F/G/L/I/Q to focus inputs, Ctrl+S to save.
+
+4) Save (Commit)
+   - Click =Commit=. Only edited rows are written to a new batch TSV in =batches/= (filename includes timestamp and query terms).
+   - A ledger line is appended per row to =ledger.tsv=, and a one-line JSON summary (=__SUMMARY__=) is written for quick stats.
+   - The curation Bloom filter is incrementally updated so subsequent queries prefer new words.
+
+5) Summary (on demand)
+   - The Summary panel on the right shows totals and length distributions for curated vs remaining words.
+   - Click =Refresh= to recompute (it’s intentionally on-demand to keep the UI snappy).
+
+6) Reminders
+   - You can mark words to revisit via the reminder bag:
+     - Toggle for selected rows (Alt+M); show the bag (Alt+B).
+     - Reminders are stored in =reminders.tsv= per profile.
+
+7) Multi-window shortcuts
+   - “New Window”: clones current query in a fresh window.
+   - “New Window from Selection”: pick selected text in any edit box and choose whether to treat it as =prefix=, =suffix=, =regex= or the corresponding negative (“Exclude …”).
+   - Right-click a table cell or text field for the same menu.
+
+** Data layout (per profile)
+
+All under =<base_dir>/<profile>/=:
+- =word-index.tsv=: TSV with =word  freq  glen=.
+- =batches/=: timestamped TSVs (header: =id  word  splits  freq  glen  notes=).
+- =ledger.tsv=: rows appended on each commit (header: =timestamp  batch  id  word  splits  notes=). Includes a JSON summary row (=__SUMMARY__=).
+- =ui-log.tsv=: UI telemetry (events like =QUERY=, =QUERY_TIME=, =REPLACE=, =COMMIT=, etc.).
+- =reminders.tsv=: your reminder words.
+- =datasets/=: exported datasets for tokenizer training (=tokenizer-<timestamp>.tsv=).
+- =models/tokenizer/<timestamp>/: saved LSTM tokenizer (=model.pt=, =config.json=, =vocab.json=).
+- (Optional for trie indexer) =fwd.trie= and =rev.trie= next to =word-index.tsv=.
+
+** Building/training the tokenizer (optional)
+
+- Export dataset from batches:
+  - ~python -m tools.export_batches_dataset --profile default --base_dir <dir>~
+  - Produces TSV with header: =src  tgt= (word → splits).
+
+- Train the seq2seq tokenizer:
+  - ~python -m tools.train_tokenizer --profile default --base_dir <dir> --epochs 5~
+  - Artifacts saved to =models/tokenizer/<timestamp>/=.
+
+- Evaluate and/or run inference with an existing model:
+  - ~python -m tools.train_tokenizer --profile default --base_dir <dir> --no_train --model_dir <path> --eval_dataset <path>~
+  - Or:
+    - ~--infer_words "செந்தாமரை" "கொள்"~ or ~--infer_file words.txt~ with ~--infer_out preds.tsv~.
+
+Note: the curated lookup is the main source of truth; a learned model is optional assist.
+
+** Performance tips
+
+- Use the trie indexer for big corpora (build once with ~--build --pbar~).
+- Keep =Curated %= low (or 0) when you want only new words.
+- Use negative filters to avoid high-volume false positives.
+- Summary panel is manual-refresh to avoid recomputation on each query/save.
+- Multi-window is cheap: indexers are shared across windows.
+
+** UI event log (for debugging/metrics)
+
+- Events are appended to =ui-log.tsv= with header: =timestamp  event_type  parameters=.
+- Useful entries:
+  - =QUERY=, =FILTER_CURATED=, =QUERY_TIME= (compare =indexer= and =elapsed_ms=),
+  - =REPLACE= (=cells_modified= count),
+  - =EDIT= (first time per row),
+  - =COMMIT= (=saved_rows=),
+  - =NEW_WINDOW=, =NEW_WINDOW_SELECTION=, =NEW_WINDOW_CONTEXT= (query spawns),
+  - =REMINDER_*=: reminder bag operations.
+
+** Troubleshooting
+
+- “No results” or “few results”:
+  - Check =Length=, negative filters, and =Curated %=.
+- “Trie indexer complains about imports”:
+  - Ensure the vendored chorkilai import path is correct. If needed, set PYTHONPATH or adapt imports to =lib/chorkilai/mlm/chorkilai/...=.
+- “Saving creates duplicates”:
+  - The GUI saves only edited rows; the =dirty= flag blocks no-op saves. If you see duplicates at file level, check batch filenames (they include timestamps) and your downstream merge rules.
+
+** Why this approach
+
+- Lookup-first tokenization:
+  - Your curated splits become a high-precision table that outperforms heuristic-only approaches.
+- Active curation:
+  - Queries surface mostly new, uncurated words; edits are fast (bulk replace + per-row refinement).
+- Optional modeling:
+  - If you need model assistance, export and train; if not, the lookup stands on its own.

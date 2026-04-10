@@ -1,0 +1,138 @@
+* Three-day summary
+
+This document summarizes all major changes and additions over the last three days, organized by area. Identifiers are shown as =verbatim= and short code/commands are shown with ~inline code~.
+
+** Removed server mode; simplified to local-only workflow
+- Removed all Unix-socket server/client code; kept a purely local curation workflow in =tools/gui_qt_app.py=.
+- Emacs client (=archive/emacs/tamil-splits.el=) and server (=archive/tools/word_server.py=) are not used anymore.
+- All data I/O now happens via per-profile files under =<base_dir>/<profile>/= (see Profile).
+
+** Unified TSV schema and local-only commit
+- Table schema consolidated to 6 columns: =id  word  splits  freq  glen  notes=.
+- Commit saves only edited rows (no status column anymore).
+- Ledger lines are appended with header: =timestamp  batch  id  word  splits  notes=.
+- Prevent duplicate saves:
+  - Added =dirty= flag; commit short-circuits when no edits since last save.
+  - Baseline (=original_splits=) is updated after successful commit to avoid re-saving unchanged rows.
+
+** GUI: query workflow and UX improvements
+- Negative filters for prefix/suffix/regex:
+  - Additional input fields: =prefix_not=, =suffix_not=, =regex_not=.
+  - Queries exclude words that match any negative constraint.
+- Always-mix curated and new rows:
+  - Adjustable curated ratio (0–100%) via a spinbox (=Curated %=).
+  - ~0%~ curated ratio strictly suppresses curated backfill.
+- New window workflow:
+  - Buttons: =New Window= and =New Window from Selection= clone current or selected query terms into a fresh window.
+  - Right-click context menu on fields and table cells to launch new windows using selected text as =prefix=, =suffix=, =regex= or their negative variants (=not prefix=, etc.).
+- Reminders bag:
+  - Toggle reminders on selected table rows (Alt+M), persist per-profile (=reminders.tsv=), and show all reminder words (Alt+B).
+- Find/Replace:
+  - Fast bulk replace with signals blocked; no per-row logging during bulk.
+  - Spaces in Replace are normalized to =-= before execution (via =TOKEN_DELIMITER=).
+  - After Replace, rows are correctly highlighted as edited (yellow).
+- Query-time telemetry:
+  - UI log event =QUERY_TIME= includes =indexer=, =elapsed_ms=, and =queried= counts for performance comparisons.
+
+** Performance optimizations (list-based indexer)
+- =tools/word_indexer.py=:
+  - Built prefix (=by_word=) and suffix (=by_rev=) indexes using =bisect= for O(log N)+O(k) candidate extraction.
+  - Precomputed length ranges (=len_ranges=, =len_counts=); fast path for length-only queries.
+  - Precomputed canonical rank index (=order_index=) to avoid recomputing sort keys.
+  - Introduced top-K selection via =heapq.nsmallest= for large candidate pools (avoids full sort).
+  - Cached compiled regex objects (=_regex_cache=).
+  - Exposed =glen_map= and =index_words= for O(1) access in the Summary panel.
+- ~UI~:
+  - Deferred summary updates; summary is updated on demand (Refresh button), not on every query/save.
+
+** Trie-backed indexer (mmap) and integration
+- New: =tools/trie_word_indexer.py=
+  - Builds and queries forward and reverse tries using chorkilai’s =OnDiskTrie=.
+  - Forward trie stores letter sequences; reverse trie stores reversed sequences (via =arichuvadi= grapheme tokens).
+  - Query candidates are collected from tries, then filtered and ranked canonically.
+  - Supports ~--profile~, ~--base_dir~, ~--build~, ~--pbar~ (optional progress bar with ~tqdm~), and defaults wordlist and trie file paths from =Profile=.
+- Integration in GUI (=tools/gui_qt_app.py=):
+  - Indexer selection via ~--indexer {list,trie}~; optional ~--fwd_trie~ and ~--rev_trie~.
+  - Shared caches for both indexers to avoid reloading across multiple windows.
+  - UI logs =QUERY_TIME= include the selected indexer kind for apples-to-apples perf comparisons.
+
+** Curation tracking via Bloom filter and batches
+- New: =tools/curation_index.py=
+  - Builds a Bloom filter over curated words from per-profile =batches/*.tsv=.
+  - Tracks =curated_words= set, per-word =curation_counts=, and =total_curation_entries=.
+  - Incremental update on commit (=update_from_batch=) and mtime-based auto-reload (=maybe_reload_on_change=).
+- Queries are biased to show mostly new words first; curated words are added as per the curated ratio.
+
+** Summary panel (on-demand refresh)
+- Summary panel sits to the right in a =QSplitter=.
+- Shows:
+  - Total words in index (=Total words=),
+  - Curated distinct words (=Curated (distinct)=),
+  - Remaining distinct words (=Remaining (distinct)=),
+  - Total curation entries (=Curation entries=),
+  - Length distribution table for curated vs remaining.
+- Refresh button computes summary only on demand (avoids heavy scans during queries or saves).
+- On save, in addition to appending ledger rows, a one-line JSON summary (=__SUMMARY__= row) is logged to =ledger.tsv= (in =notes= column), including length distribution maps.
+
+** Refactors and structure cleanup
+- Split long functions into smaller helpers:
+  - =PhoneticLineEdit.keyPressEvent= factored into =_normalize_state_for_editing=, =_handle_backspace=, =_handle_delete=, =_handle_boundary_char=, =_handle_alnum_char=.
+  - Query pipeline in =MainWindow=: =_read_query_fields=, =_probe_raw_results=, =_apply_negative_filters=, =_partition_new_old=, =_pick_curated_and_new=, =_log_*()= helpers.
+  - Summary: =_compute_summary_sets=, =_update_summary_labels=, =_populate_length_table=.
+  - Commit: =_collect_edited_rows=, =_write_batch_file=, =_refresh_curated_and_broadcast=, =_update_baseline_after_save=.
+  - Build of prefix/suffix/regex panel split into =_build_prefix_row=, =_build_suffix_row=, =_build_regex_row=.
+- Transliteration functions (=tools/tamil_phonetic.py=, =tamilphonetic/core.py=) reorganized into inner helpers without changing behavior.
+- New utility: =tools/function_lengths.py= (AST-based function length reporter) with ~--min~, ~--top~, ~--by-file~, ~--json~.
+
+** Tokenizer training and inference pipeline
+- Export curated dataset from batches: =tools/export_batches_dataset.py=
+  - Output TSV header: =src  tgt= (=src= is Tamil word; =tgt= is split tokens joined by =-=).
+- Training script: =tools/train_tokenizer.py=
+  - LSTM-based seq2seq (char-level encoder to token-level decoder).
+  - Packaging: saves =model.pt=, =config.json=, =vocab.json= under =<profile>/models/tokenizer/<timestamp>/=.
+  - CLI modes:
+    - Train, then optional eval/infer:
+      - ~--epochs~, ~--batch_size~, ~--emb~, ~--hidden~, ~--layers~, ~--lr~, ~--device~.
+      - ~--eval_dataset~ for exact-match accuracy.
+      - ~--infer_words~ or ~--infer_file~ and optional ~--infer_out~.
+    - Load-only mode: ~--no_train --model_dir <path>~ then ~--eval_dataset~ and/or inference options.
+
+** Data and logging changes
+- Per-profile =Profile= now includes:
+  - =wordlist_path=, =ledger_path=, =batches_dir=, =ui_log_path=, =reminders_path=, =datasets_dir=, =models_dir=.
+- UI log is profile-scoped (=ui-log.tsv=) and records:
+  - =QUERY= parameters, =FILTER_CURATED= stats, =QUERY_TIME= telemetry,
+  - =EDIT= (first change per row), =REPLACE= (bulk), =SORT= (all variants),
+  - =REMINDER_ADD=, =REMINDER_REMOVE=, =REMINDER_SHOW=,
+  - =NEW_WINDOW=, =NEW_WINDOW_SELECTION=, =NEW_WINDOW_CONTEXT=,
+  - =COMMIT= with =saved_rows=.
+- Ledger summary rows now store JSON in =notes= (previous plain string was replaced).
+
+** Developer utilities and guidance
+- =tools/function_lengths.py=: use ~python -m tools.function_lengths tools/gui_qt_app.py --top 25~ to spot the longest functions.
+- Subtree/submodule guidance:
+  - If using =git subtree=, destination prefix must not already exist; remove manual copies before ~git subtree add --prefix lib/chorkilai ...~.
+  - Local repo paths can be used as subtree remotes.
+  - Compared subtree vs submodule; subtree recommended for vendored-code workflow.
+
+** Known issues / next steps
+- =tools/trie_word_indexer.py=:
+  - Ensure the import path matches vendored chorkilai location (=lib/chorkilai/...=). If running outside the package context, set PYTHONPATH or adjust import (e.g., =from lib.chorkilai.mlm.chorkilai.trie import OnDiskTrie=).
+  - =_load_word_meta()= currently references =pbar= but doesn’t accept it; remove the dead branch or add a parameter if a progress bar is needed there.
+- =.gitignore= currently ignores =lib/= entirely; if chorkilai is vendored in-repo, reconsider ignoring =lib/= or place it under =third_party/=.
+- Consider a GUI affordance (menu or toggle) to switch indexer at runtime; currently it’s via CLI (~--indexer~).
+- Optional: summary refresh could display elapsed computation time and a count of batches processed.
+
+** Quick commands recap
+- Build word index:
+  - ~python -m tools.build_word_index input1.tsv [input2.tsv ...] > <base_dir>/<profile>/word-index.tsv~
+- Build tries (with progress bar):
+  - ~python -m tools.trie_word_indexer --profile default --base_dir <dir> --build --overwrite --pbar~
+- Launch GUI (trie indexer):
+  - ~python -m tools.gui_qt_app --profile default --base_dir <dir> --indexer trie~
+- Export dataset:
+  - ~python -m tools.export_batches_dataset --profile default --base_dir <dir>~
+- Train tokenizer:
+  - ~python -m tools.train_tokenizer --profile default --base_dir <dir> --epochs 5~
+- Inference only (existing model):
+  - ~python -m tools.train_tokenizer --profile default --base_dir <dir> --no_train --model_dir <path> --infer_words "செந்தாமரை" "கொள்"~

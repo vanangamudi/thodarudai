@@ -1,0 +1,1 @@
+write the documentation in org-mode. use org-mode native formatting and do not wrap headings in **...** unncessarily. use =...= verbatim elements and ~...~ for inline code.

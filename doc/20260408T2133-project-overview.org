@@ -1,0 +1,541 @@
+* Project Documentation
+
+This document describes every module, class, function, and module-level variable in the repository, calls out stale or dead code, and highlights inconsistencies and potential bugs. Identifiers are shown as =verbatim= and short code/commands are shown with ~inline code~.
+
+** Repository layout
+- =tools/gui_qt_app.py=: Qt GUI client for querying words, editing splits, sorting, and committing edits either locally or to a Unix socket server.
+- =tools/word_server.py=: Unix domain socket word server that supports =QUERY=, =COMMIT=, =RELOAD=, and =STATS= commands.
+- =tools/word_indexer.py=: Loads a word index file (=word-index.tsv=) and supports query filters.
+- =tools/build_word_index.py=: Aggregates frequency counts from input files and prints a new TSV with grapheme lengths; utility script.
+- =tools/tamil_phonetic.py=: Standalone Tamil transliteration logic (romanized to Tamil), used by the GUI for phonetic input fields.
+- =tamilphonetic/core.py=: Library form of the transliteration logic (duplicate of =tools/tamil_phonetic.py= with minor differences).
+- =tamilphonetic/__init__.py=: Exports the transliteration API from the =tamilphonetic= package.
+- =tamil_editor_demo.py=: Simple QTextEdit-based demo of phonetic input; not integrated with the main GUI.
+- =emacs/tamil-splits.el=: Emacs client for issuing queries and committing TSV batches to the server.
+- =trie.py=: A generic Trie implementation geared to arbitrary sequence types; includes =StringNode= specialization.
+- =VARALARU.org=: Log/instructions for external tools and data processing.
+- =VAZHU.org=: Notes/log including a demonstration of a trie bug and its fix.
+
+** Data and runtime
+- Profiles (=tools/profile.py=) define per-profile paths under =<base_dir>/<profile>/=:
+  - =word-index.tsv=: Word index file with header =word	freq	glen=.
+  - =ledger.tsv=: Ledger file written by GUI-in-local-mode or by the server.
+  - =batches/=: Batch TSVs in local-commit mode.
+  - =tamil-words.sock=: Unix domain socket path for the server.
+- GUI default mode is ="server"= but queries are performed locally via =WordIndex=; commits can go local or server depending on mode.
+
+* Module: tools/profile.py
+
+- =class Profile=
+  - =__init__(self, name="default", base_dir=None)=
+    - Purpose: Initialize a profile that provides resolved paths for artifacts and runtime endpoints under a base directory.
+    - Parameters:
+      - =name=: Profile name subdirectory (default "default").
+      - =base_dir=: Base directory; defaults to =os.getcwd()= when not supplied.
+    - Side-effects: Ensures parent directories exist for wordlist, ledger, and batches.
+    - Attributes:
+      - =self.name=: Profile name.
+      - =self.base_dir=: Resolved base directory.
+      - =self.wordlist_path=: =<base_dir>/<name>/word-index.tsv=
+      - =self.ledger_path=: =<base_dir>/<name>/ledger.tsv=
+      - =self.batches_dir=: =<base_dir>/<name>/batches=
+      - =self.socket_path=: =<base_dir>/<name>/tamil-words.sock=
+- =default_profile=
+  - Instance: A default =Profile()= constructed at import time.
+  - Purpose: Convenience for scripts that want default locations.
+
+Notes:
+- Directory creation occurs at construction; any consumer that constructs =Profile= will create directories even if not used.
+
+* Module: tools/tamil_phonetic.py
+
+- Module purpose: Transliterate romanized Tamil sequences into Tamil script with greedy token matching; add pulli marker by default for bare consonants.
+- Module-level constants:
+  - =PHONETIC_VOWELS=: dict mapping vowel tokens (='a', 'aa', ..., 'au'=) to standalone Tamil letters.
+  - =VOWEL_DIACRITICS=: dict mapping vowel tokens to diacritics used with a pending consonant (='' for ='a'=).
+  - =CONSONANTS=: dict mapping consonant tokens to Tamil base consonants. Notes:
+    - Case-sensitive tokens exist (='N', 'L', 'S', 'Z', 'ksH'=), with special handling in transliteration.
+    - =ksh= maps to a ligature form with ZWNJ (=க்‌ஷ=).
+  - =PULLI=: Tamil virama marker "்".
+  - =VOWEL_TOKENS=: list of vowel tokens sorted by descending length (for greedy match).
+  - =CONSONANT_TOKENS=: list of consonant tokens sorted by descending length (for greedy match).
+- =def transliterate(text)=
+  - Purpose: Convert romanized =text= to Tamil, greedily matching tokens and applying diacritics to pending consonants; append =PULLI= for bare consonants at boundaries/end.
+  - Behavior:
+    - Maintains a =pending= consonant. When a vowel token is found:
+      - If =pending= exists, appends =pending + VOWEL_DIACRITICS[vowel]=.
+      - Else appends standalone vowel letter =PHONETIC_VOWELS[vowel]=.
+    - For consonant tokens:
+      - Flushes any previous =pending= with =PULLI=, then sets =pending= to the matched consonant letter.
+      - Accepts exact match or case-insensitive match only when both the input candidate’s and token’s first letters are lowercase (preserving explicit capital-only tokens behavior).
+    - On whitespace/punctuation boundary:
+      - Flushes =pending= with =PULLI=.
+    - On other unmatched characters:
+      - Flushes =pending= without pulli (pure consonant), then copies the character.
+    - At end of input:
+      - Flushes =pending= with =PULLI=.
+  - Returns: A single Tamil string.
+- CLI guard:
+  - If invoked as a script, prints transliteration for the provided argument.
+- Notes:
+  - Behavior around case-insensitive consonants is asymmetric to allow explicit capitalized tokens like ='N', 'L', 'S', 'Z'= to remain distinct.
+
+* Module: tamilphonetic/core.py
+
+- Purpose: Same logic and mappings as =tools/tamil_phonetic.py=, packaged under =tamilphonetic=.
+- Duplicates:
+  - Contains =PHONETIC_VOWELS=, =VOWEL_DIACRITICS=, =CONSONANTS=, =PULLI=, =VOWEL_TOKENS=, =CONSONANT_TOKENS=, and =transliterate(text)= with equivalent algorithm.
+- CLI behavior: Same as tools variant.
+
+Note:
+- Duplication risk: Two sources of truth for transliteration. Consider consolidating to one (see Issues).
+
+* Module: tamilphonetic/__init__.py
+
+- =from .core import transliterate, PHONETIC_VOWELS, VOWEL_DIACRITICS, CONSONANTS, PULLI=
+  - Purpose: Re-export core transliteration API for consumers that import =tamilphonetic=.
+
+* Module: tools/word_indexer.py
+
+- Module purpose: Load a word index and provide filtered queries.
+- =class WordIndex=
+  - =__init__(self, wordlist_path)=
+    - Purpose: Construct index bound to a TSV file.
+    - Parameters: =wordlist_path= path to a TSV with header =word	freq	glen=.
+    - Attributes:
+      - =self.wordlist_path=: stored path.
+      - =self.words=: list of tuples =(word, freq, glen)= sorted by =(-glen, -freq, word)=.
+    - Calls: =self._load_wordlist()=.
+  - =def _load_wordlist(self)=
+    - Purpose: Read and parse the TSV file; skip blank or bad rows.
+    - Behavior:
+      - Reads header; builds column index by name.
+      - Appends parsed tuples.
+      - Sorts descending by grapheme length, then frequency, then ascending word.
+    - Side-effects: Prints "loading word list..." start and DONE messages to stdout.
+  - =def query_words(self, prefix="", suffix="", min_len=1, max_len=None, limit=200, offset=0, exclude_fn=None, regex="")=
+    - Purpose: Return words that satisfy various filters.
+    - Parameters:
+      - =prefix=: required =str.startswith(prefix)= filter.
+      - =suffix=: required =str.endswith(suffix)= filter.
+      - =min_len=: minimum =glen= inclusive.
+      - =max_len=: optional maximum =glen= inclusive; =None= to ignore.
+      - =limit=: maximum result count.
+      - =offset=: number of matches to skip before collecting.
+      - =exclude_fn=: callable(word) -> bool to skip accepted/other words.
+      - =regex=: optional regex pattern; compiled if valid; =search()= used.
+    - Returns: list of tuples =(word, freq, glen)= at most =limit= items.
+
+* Module: tools/build_word_index.py
+
+- Module purpose: Build a word index from one or more input files, aggregating frequency counts and computing grapheme lengths using =arichuvadi=.
+- =def openfile(filepath, mode='rt', *args, **kwargs)=
+  - Purpose: Open text or gzipped (=.gz=) files transparently; returns a file object.
+- =def main(paths=None)=
+  - Purpose: Read input paths, aggregate counts, and print TSV with header =word	freq	glen= to stdout.
+  - Parameters: =paths=: list of input file paths; when omitted, defaults to =[default_profile.wordlist_path]= (note: likely unintended; see Issues).
+  - Behavior:
+    - Skips first header line if it starts with "word".
+    - Expects at least two columns: =word= and =freq=; if freq parse fails, defaults to 1.
+    - Uses =ari.length(w)= for grapheme length.
+- CLI guard:
+  - Requires at least one path; prints usage and exits if missing.
+  - Usage string references =tools.build_wordlist= (stale; see Issues).
+
+* Module: tools/word_server.py
+
+- Constants:
+  - =REQUIRED_BATCH_HDR=: =("id", "word", "freq", "glen", "splits", "status", "notes")=
+  - =LEDGER_HDR=: =("timestamp", "batch", "id", "word", "status", "splits", "notes")=
+- =def percent_decode(s)=
+  - Purpose: Percent-decodes a string using urllib’s =unquote=.
+- =def parse_params(line)=
+  - Purpose: Parse a command line into (=cmd=, =params dict=).
+  - Behavior: Splits by whitespace; then for tokens with "=", splits on first "=" (allows percent-encoded spaces in values).
+- =class State=
+  - =__init__(self, wordlist_path, ledger_path)=
+    - Purpose: Create server state with a =WordIndex= bound to =wordlist_path= and load latest statuses from =ledger_path=.
+    - Attributes:
+      - =self.wordlist_path=
+      - =self.ledger_path=
+      - =self.word_index=: =WordIndex(wordlist_path)=
+      - =self.words=: alias to =self.word_index.words=
+      - =self.words_by_len=: alias to =self.words=
+      - =self.latest_status=: dict mapping word -> last known status from ledger.
+      - =self.accepted=: set of words with status "accepted".
+    - Calls: =self._load_ledger()=.
+  - =def _load_wordlist(self)=
+    - Purpose: Local TSV loader (duplicate of =WordIndex= logic); sorts by =(-glen,-freq,word)=.
+    - Note: Not invoked by =__init__=, retained for =reload()=.
+  - =def _load_ledger(self)=
+    - Purpose: Load latest statuses from ledger; expects a header containing all names in =LEDGER_HDR=.
+    - Behavior: Builds =self.latest_status= dict and =self.accepted= set.
+  - =def reload(self, what)=
+    - Purpose: Reload =wordlist= and/or =ledger= based on =what in {"wordlist","ledger","both"}=; updates in-memory state.
+- =class Handler(socketserver.StreamRequestHandler)=
+  - =def handle(self)=
+    - Purpose: Reads a line, parses command, dispatches to sub-handlers: =_handle_query=, =_handle_commit=, =_handle_reload=, =_handle_stats=.
+  - =def _write_ok(self, kv=None)=
+    - Purpose: Write an =OK= line with optional space-separated =k=v= pairs.
+  - =def _write_err(self, code, msg)=
+    - Purpose: Write an =ERR= line with error code and message.
+  - =def _handle_query(self, p)=
+    - Purpose: Serve word list queries using =WordIndex.query_words()= with filters:
+      - Params: =prefix=, =suffix=, =min_len=, =limit=, =offset=, =exclude_accepted=, =regex=.
+      - Exclusion: =exclude_accepted= excludes words in =self.server.state.accepted=.
+    - Response:
+      - First writes =OK rows=<n>=, then a TSV header line (=REQUIRED_BATCH_HDR=), then rows.
+      - Row format intended: columns for =REQUIRED_BATCH_HDR=.
+  - =def _handle_commit(self, p)=
+    - Purpose: Accept a client batch TSV and append to the ledger with timestamp and batch.
+    - Params: =batch= (percent-decoded), =rows= (# lines to read).
+    - Validates header to match =REQUIRED_BATCH_HDR=, writes lines to ledger and updates =latest_status= and =accepted= set.
+  - =def _handle_reload(self, p)=
+    - Purpose: Reloads state (=wordlist=, =ledger=, or =both=).
+  - =def _handle_stats(self)=
+    - Purpose: Returns sum stats: =words=, =accepted=, =ledger_lines=, and mtimes for wordlist and ledger.
+- =class UnixServer(socketserver.UnixStreamServer)=
+  - =__init__(self, sock_path, state)=
+    - Purpose: Set up a Unix stream server at =sock_path=; removes existing socket path; ensures directory; stores =state= and =ledger_path=.
+- =def main()=
+  - Purpose: Entry point; parse args and run the Unix domain socket server bound to profile paths.
+  - Args: =--socket=, =--profile=, =--base_dir=
+  - Behavior:
+    - Constructs a =Profile= from args; uses that profile’s paths.
+    - Runs the server and cleans up the socket on exit.
+
+Issues within server:
+- In =_handle_query()=, emitted rows are =f"{w}\t{fr}\t{gl}\t\ttodo\t\n"= which:
+  - Lacks the leading =id= column.
+  - Lacks the =word= column (only =w= is present and appears at position 1 instead of 2).
+  - Provides only 6 columns while =REQUIRED_BATCH_HDR= expects 7.
+- In =main()=:
+  - References =args.wordlist= and =args.ledger= which are not defined by argparse (bug).
+  - Uses =args.socket= in the ready message and cleanup while the actual bound path is =profile.socket_path= (inconsistency).
+- Ledger header expected by server (=LEDGER_HDR=) differs from the GUI’s local-ledger header (see GUI section).
+
+* Module: tools/gui_qt_app.py
+
+- Module-level constants:
+  - =BATCHES_DIR=: "data/batches" (only used when mode is ="local"=; overridden by Profile in main).
+  - =LEDGER_PATH=: "data/splits-ledger.tsv" (overridden by Profile in main).
+  - =WORDLIST_PATH=: "data/word-index.tsv" (overridden by Profile in main).
+- =class PhoneticLineEdit(QLineEdit)=
+  - Attributes:
+    - =self.committed=: Accumulated committed Tamil text (already transliterated).
+    - =self.composition=: Romanized composition currently being typed.
+  - =def commit_composition(self)= [defined twice; duplication]
+    - Purpose: Transliterate =composition= and append to =committed=. If the romanized =composition= does not end with any vowel token, force add a pulli at the end unless already present.
+    - Behavior: Uses =transliterate(self.composition)= and checks suffix against =PHONETIC_VOWELS= keys. Ensures pulli appended in incomplete cases. Clears =composition= afterward.
+    - Notes: Defined twice with near-identical logic and logging differences; the second definition overwrites the first (duplication).
+  - =def setUndoRedoEnabled(self, enabled)=
+    - Purpose: Safely call base =QLineEdit.setUndoRedoEnabled= if present; ignores AttributeError.
+  - =def is_possible_prefix(self, candidate)=
+    - Purpose: Validates romanized prefixes while composing:
+      - Returns =True= if:
+        - =candidate= is exactly a token in =PHONETIC_VOWELS= or =CONSONANTS=, or
+        - =candidate= is a prefix of any token in those dicts, or
+        - =candidate= can be split into a valid consonant token + a prefix of a vowel token.
+  - =def update_display(self)=
+    - Purpose: Update visible text by joining =committed + transliterated(composition)=; shows pulli for incomplete consonant composition.
+    - Behavior: Ensures cursor at end.
+  - =def keyPressEvent(self, event)=
+    - Purpose: Intercept typing for phonetic composition:
+      - If selection or cursor not at end: fall back to default behavior, then sync internal =committed= and clear =composition=.
+      - =Backspace/Delete=: edit =composition= if present, else edit =committed=.
+      - Whitespace/punctuation: commits =composition= and inserts boundary char.
+      - Alnum: grows =composition= if =is_possible_prefix=; else commits and either starts new composition with current char or appends it raw.
+  - =def insertFromMimeData(self, source)=
+    - Purpose: Handle paste operations, including replacing selected text; resets =composition= and updates =committed= to the new plain text; maintains cursor position near pasted content.
+- =class MainWindow(QMainWindow)=
+  - Attributes (setup in =__init__=):
+    - =self.socket_path=: Path to the server socket from args/profile.
+    - =self.mode=: "server" or "local".
+    - =self.batch_dir=: Only when mode is "local"; ensures directory exists.
+    - =self.wordlist_path=: Path to word index file.
+    - =self.word_index=: =WordIndex(wordlist_path)= used for local queries.
+    - GUI Widgets: =prefix_edit=, =suffix_edit=, =regex_edit=, =length_edit=, =limit_spin=, =exclude_cb=, =phonetic_cb=, =table=, =find_edit=, =replace_edit=, =sort_lambda_edit=, buttons, shortcuts.
+  - =def parse_length_spec(self, length_spec)=
+    - Purpose: Parse inputs like ="4-9"=, ="4-"=, or ="7"= to produce =(min_len, max_len)=.
+    - Returns: =(min_len, max_len or None)=.
+  - =def query_words(self)=
+    - Purpose: Query using =WordIndex= with filters from UI fields.
+    - Gathers: =prefix=, =suffix=, =regex=, parsed =(min_len,max_len)=, =limit=, =exclude=.
+    - Exclusion: defines =exclude_fn= that checks =word in self.accepted_words()= when =exclude= is checked.
+    - Logs a =QUERY= UI event and populates the table with results.
+    - Note: =self.accepted_words()= is not defined in this module (bug).
+  - =def build_tsv_lines(self)=
+    - Purpose: Build TSV lines from the table for commit. Header: =id	split	freq	glen	status	notes=.
+    - Source: Table has 6 columns mirroring that header.
+    - Returns: list[str] (header + rows).
+    - Note: Header does not match the server’s expected header (see Issues).
+  - =def update_ledger(self, tsv_lines, batch_name)=
+    - Purpose: Append entries to a local ledger file; writes a header if file is empty:
+      - Header: =timestamp	batch	id	split	status	notes=
+      - For each row: writes =ts	batch	id_or_split	split	status_or_todo	notes=.
+    - Uses =fcntl= to lock during write.
+    - Note: Header/columns differ from server’s =LEDGER_HDR=, and file path is shared with =log_ui_event= (see Issues).
+  - =def generate_batch_name(self)=
+    - Purpose: Compose a default filename using local time, sanitized prefix/suffix, and the length spec.
+  - =def commit_edits(self)=
+    - Purpose: Commit edits locally (write TSV to batches dir and update ledger) or via server (send =COMMIT= with body TSV).
+    - Server mode:
+      - Builds command: ~COMMIT batch=<name> rows=<n>~.
+      - Sends body =tsv_lines= via =send_command()=.
+  - =def get_table_data(self)=
+    - Purpose: Return table contents as list of rows (each row is list of strings).
+  - =def set_table_data(self, data)=
+    - Purpose: Replace table content from a list of row lists; sets items editable; resizes columns.
+  - =def populate_table_from_results(self, results)= [defined twice; duplication]
+    - Purpose: Populate table from query tuples:
+      - If tuple len == 3: interpret as =(split_text, freq, glen)= with =id= defaulting to =split_text=.
+      - Else len >= 4: interpret first 4 as =(id, split_text, freq, glen)=.
+      - Fills out columns and sets default ="todo"= status.
+  - =def log_ui_event(self, event_type, parameters)=
+    - Purpose: Append a UI event log line to a ledger-like TSV:
+      - Writes header =timestamp	event_type	parameters= if file is empty.
+      - Appends event line with =; =-joined key=value pairs.
+      - Uses =fcntl= file lock.
+    - Note: File path is the same as =LEDGER_PATH= (shared with data ledger; see Issues).
+  - =def refresh_phonetic_fields(self)=
+    - Purpose: Calls =update_display()= on the three phonetic fields (prefix, suffix, regex) when toggled.
+  - =def populate_table(self, data_lines)=
+    - Purpose: Populate table from raw TSV string lines, making each cell editable.
+  - =def send_command(self, command, body=None)=
+    - Purpose: Connect to the Unix socket and send a single-line command optionally followed by body lines; then collect the full response.
+  - =def show_table_context_menu(self, pos)=
+    - Purpose: Context menu to toggle ignore status on selected rows.
+    - Logic: Sets action text to "Unmark as Ignored" if all selected rows are currently "ignored", else "Mark as Ignored".
+    - Note: Reads status from column 5 but table header places "status" at column 4 (bug).
+  - =def toggle_ignore_status(self, row)=
+    - Purpose: Toggle status cell on a row between "ignored" and "todo"; tint background accordingly.
+    - Note: Uses column 5 instead of 4 for "status" (bug).
+  - =def toggle_ignore_for_selected(self)=
+    - Purpose: Toggle ignore status for all selected rows; logs a =MARK= UI event with count.
+  - =def apply_replace_to_cell(self)=
+    - Purpose: Find/replace within split column (index 1) for selected (or all) cells; logs =REPLACE= UI event.
+  - =def sort_table_by_prefix(self)=
+    - Purpose: Sort data lexicographically by the ="id"= cell (col 0), case-insensitive.
+  - =def sort_table_by_suffix(self)=
+    - Purpose: Sort by reversed ="id"= cell for suffix-order.
+  - =def sort_table_custom(self, key_func, event_desc="custom")=
+    - Purpose: Generic sorter using a provided key function; logs a =SORT= event.
+  - =def apply_custom_sort(self)=
+    - Purpose: Evaluate a lambda key from the text entry (~lambda row: ...~) with restricted builtins and sort.
+  - =def sort_table_by_length_and_suffix(self)=
+    - Purpose: Sort primarily by grapheme length descending (col 3), tiebreak by reversed ="split"= (col 1).
+  - =def build_find_replace_panel(self)=
+    - Purpose: Build the Find/Replace subpanel with phonetic-aware =QLineEdit=s and a button.
+  - =def build_prefix_suffix_regex_panel(self)=
+    - Purpose: Build three phonetic =QLineEdit= rows (prefix, suffix, regex).
+  - =def build_query_parameters_panel(self)=
+    - Purpose: Build length spec, limit, exclude-accepted checkbox, phonetic toggle, and Query button row.
+  - =def build_sort_panel(self)=
+    - Purpose: Build sort buttons and a custom sort lambda entry.
+  - =def build_table_panel(self)=
+    - Purpose: Create a 6-column =QTableWidget= with column headers =["id","split","freq","glen","status","notes"]=, row-selection and context menu hookup.
+  - =def prefill_find_field(self, row, col)=
+    - Purpose: If user clicks the ="split"= column (1), copy that text into the Find field.
+- =if __name__ == "__main__":=
+  - Purpose: Parse args, instantiate =Profile= to override default paths, and run the main window.
+  - Args:
+    - =--profile=, =--base_dir=, =--mode= ("server" or "local").
+  - Uses: =Profile.socket_path= for the GUI’s =socket_path=.
+
+Issues in GUI:
+- =PhoneticLineEdit.commit_composition()=: defined twice; second overwrites the first (duplication).
+- =MainWindow.populate_table_from_results()=: defined twice (duplication).
+- =MainWindow.query_words()=: references =self.accepted_words()= which is not defined; exclusion will raise an exception when =Exclude accepted= is checked.
+- Context menu and toggle ignore features:
+  - Treat column 5 as "status"; the table header places "status" at column 4 (off-by-one).
+- Local ledger writing (=update_ledger=) and UI event logging (=log_ui_event=):
+  - Both write to the same =LEDGER_PATH= but with different headers and row formats; file contents will be inconsistent and break the server’s ledger loader.
+- Server commit compatibility:
+  - GUI builds a 6-column TSV header =["id","split","freq","glen","status","notes"]=, not the server’s 7-column =REQUIRED_BATCH_HDR=. Server =COMMIT= will be rejected.
+
+* Module: tamil_editor_demo.py
+
+- Module purpose: Standalone demo of phonetic input with =QTextEdit=. Not integrated with the main GUI workflow.
+- =class PhoneticTextEdit(QTextEdit)=
+  - =__init__(self, parent=None)=
+    - Sets placeholder; initializes =committed= and =composition= buffers.
+  - =def commit_composition(self)=
+    - Transliterate =composition=, append pulli if incomplete, append to =committed=, clear =composition=.
+  - =def update_display(self)=
+    - Transliterate =composition=, append pulli when incomplete; set editor text to =committed + current_disp=; force cursor to end.
+  - =def is_possible_prefix(self, candidate)=
+    - Same predicate structure as the GUI’s; checks tokens and consonant+vowel-prefix splits.
+  - =def keyPressEvent(self, event)=
+    - Similar behavior to the GUI’s =PhoneticLineEdit.keyPressEvent()=, adapted for =QTextEdit=.
+- =class MainEditorWindow(QMainWindow)=
+  - =__init__(self)=
+    - Sets up central layout with an editor, display label, and a clear-text shortcut.
+  - =def update_tamil_display(self, text)=
+    - Updates the label (debug print included).
+  - =def clear_text(self)=
+    - Clears the editor content.
+- =if __name__ == "__main__":=
+  - Launches the demo window.
+
+Stale/dead code in file:
+- After ~sys.exit(app.exec_())~, there are duplicate method definitions (=update_display= and =keyPressEvent=) embedded incorrectly under the main guard. They are unreachable and include an incorrect pulli character ("์" Thai character) and commented confusion. This block is dead and should be removed.
+
+* Module: emacs/tamil-splits.el
+
+- =tamil-splits-socket=
+  - Default: =run/tamil-words.sock= resolved from the repository root directory.
+  - Used by all I/O functions to connect to the server.
+- =defun tamil-splits--send (command &optional body-lines)=
+  - Purpose: Low-level client: open a local Unix socket process, send =command= and optional =body-lines=, read response, and return a cons =(status-line . body-string)=.
+  - Behavior: Writes command + newline; body lines each suffixed with newline; sends EOF; waits until process closes.
+- =defun tamil-splits--percent-encode (s)=
+  - Purpose: Percent-encode a string for safe command parameter embedding.
+- =defun tamil-splits-query (prefix suffix min-len limit exclude-accepted &optional regex)=
+  - Purpose: Interactively fetch a TSV batch via the server’s =QUERY=; displays body in buffer =*Tamil Splits Batch*=.
+  - Builds command: ~QUERY prefix=... suffix=... min_len=<n> limit=<n> offset=0 exclude_accepted=0/1 [regex=...]~.
+- =defun tamil-splits-set-status (status)=
+  - Purpose: Set status column (=accepted|ambiguous|rejected|todo=) on current line or region in the current TSV buffer.
+- =defun tamil-splits-set-splits (split-str)=
+  - Purpose: Set the "splits" column for current line/region.
+- =defun tamil-splits-commit (&optional batch-name)=
+  - Purpose: POST current TSV buffer (including header) to the server via =COMMIT=; validates that header starts with ="id	word	freq	glen"=.
+- Global keybindings:
+  - ="C-c t q"= query, ="C-c t a/m/r"= set status accepted/ambiguous/rejected, ="C-c t s"= set splits, ="C-c t c"= commit.
+
+Notes:
+- The Emacs client and the server agree on the required header (=REQUIRED_BATCH_HDR=) format with 7 columns. The GUI currently doesn’t match this.
+
+* Module: trie.py
+
+- Purpose: Trie for arbitrary sequence-like keys using a pluggable =node_class=; default specialized =StringNode= for Python strings.
+- Module constants:
+  - =SLICE_FIRST_REST=: a =slice(1, None, None)= used to get rest-of-sequence.
+- =class Node=
+  - =__slots__=: =['count','is_complete','children','trie']=
+  - =__init__(self, trie, count=0)=
+    - Initializes node; sets =count=, =is_complete=False=, =children=dict()=, saves =trie= reference for creating children.
+  - Abstract-ish methods (signatures on base are not consistent with =StringNode= but are not invoked on base):
+    - =concat(self, seq1, seq2)=: abstract.
+    - =split(self, seq1, seq2)=: abstract (note: likely intended =split(self, seq)=; see Issues).
+    - =index(self, seq1, seq2)=: abstract (note: intended =index(self, seq, index)=).
+  - =def first_rest(self, sequence)=
+    - Purpose: Return 2-tuple =(first, rest)= using =index(sequence, 0)= and =index(sequence, SLICE_FIRST_REST)=.
+  - =def add(self, sequence)=
+    - Purpose: Insert =sequence=; increments =count= at each node traversed; marks =is_complete= at terminal node.
+    - Behavior: Creates missing child nodes using =self.trie.node_class(self.trie)=.
+  - =def find_prefix(self, prefix, length=0)=
+    - Purpose: Traverse as far as possible along =prefix=; returns =(last_node_reached, length_consumed)=.
+  - =def to_dict(self)=
+    - Purpose: Serialize node to a plain dict recursively.
+  - =@classmethod def from_dict(cls, trie, dictionary)=
+    - Purpose: Deserialize from dict into a node tree belonging to =trie=.
+  - =def merge(self, other)=
+    - Purpose: Merge another node into =self= by combining counts, =is_complete=, and recursively merging children.
+  - =def get_suffixes(self, prefix)=
+    - Purpose: Return all words that start with =prefix= under this node, by:
+      - Resolving =(prefix_node, length)= via =find_prefix=.
+      - On =length==0=: returns empty list.
+      - Else: returns =[prefix[:length] + suffix for suffix in prefix_node._get_suffixes()]=.
+  - =def _get_suffixes(self)=
+    - Purpose: Internal recursion: if leaf, return =[EMPTY]=; else concatenate =key + suffix= across children recursively.
+  - =def __repr__/__str__=:
+    - Return a JSON-formatted string representation of =to_dict()=.
+- =class StringNode(Node)=
+  - =EMPTY=: '' (empty string)
+  - =def concat(self, seq1, seq2)=: return =seq1 + seq2=
+  - =def split(self, seq)=: return a shallow copy =seq[:]=
+  - =def index(self, seq, index)=: return =seq[index]=
+- =class Trie=
+  - =__init__(self, node_class)=
+    - Purpose: Create a trie with a specific node class; instantiates =root=.
+  - =def load_dict(self, dictionary)=
+    - Purpose: Load an existing dict-form trie into =self.root= via =node_class.from_dict=.
+  - =def as_dict(self)=
+    - Purpose: Serialize =root= to dict.
+  - =def add(self, sequence)=
+    - Proxy to =self.root.add=.
+  - =def merge(self, other)=
+    - Purpose: Merge another trie into this one by merging roots.
+  - =def find_prefix(self, prefix, default=None)=
+    - Proxy to =self.root.find_prefix=.
+  - =def get_all_suffixes(self, prefix)=
+    - Purpose: Collect all suffixes for a given =prefix=; uses a BFS-like traversal.
+    - Behavior:
+      - Gets =(node, level)= via =find_prefix=.
+      - If =prefix= non-empty: moves to =node.children[prefix[-1]]= (assumes full match).
+      - Enqueues children with growing prefix strings; records items where =node.is_complete= is true.
+    - Notes: Potential =KeyError= when =prefix= is not entirely present; see Issues.
+  - =def words(self)=
+    - Purpose: Return all words under =root= (i.e., =get_all_suffixes(self.root)=). Note: Call signature is incorrect; see Issues.
+- =if __name__ == '__main__':= block: Manual testing and interactive debugging.
+
+Issues:
+- Base abstract method signatures (=split, index=) mismatch their concrete =StringNode= implementations; only =StringNode=’s interface is used.
+- =Trie.words(self)= calls =get_all_suffixes(self.root)= but expects a string prefix; this is a misuse (bug).
+- =Trie.get_all_suffixes= assumes full prefix match and indexes =node.children[prefix[-1]]= even when =find_prefix= did not fully match; may raise =KeyError=.
+
+* Module: VARALARU.org
+
+- Purpose: Org-mode log of data processing steps and tool setup for corpora and suffix extraction tasks; includes:
+  - Shell steps to clone external tool repo.
+  - Python block to generate suffix counts using =arichuvadi= utilities.
+- No executable functions; informational.
+
+* Module: VAZHU.org
+
+- Purpose: Org-mode notes/log; includes:
+  - Demonstration exposing a bug in a prior =Trie.get_suffixes= implementation (returning suffixed prefixes on miss).
+  - Notes on modified Trie design for supporting arbitrary sequence node classes.
+- No executable functions; informational.
+
+* Stale/Dead code and scripts
+
+- =tamil_editor_demo.py=
+  - Dead code after ~sys.exit(app.exec_())~: duplicate method defs with incorrect pulli; unreachable and should be removed.
+- =tools/build_word_index.py=
+  - Default =paths=[default_profile.wordlist_path]= when none are provided likely does the wrong thing for a builder (reads an output file as input).
+  - Usage string refers to =tools.build_wordlist= instead of =tools.build_word_index= (stale).
+- =tools/gui_qt_app.py=
+  - Duplicate method definitions: =PhoneticLineEdit.commit_composition()= and =MainWindow.populate_table_from_results()= are defined twice.
+- =tamilphonetic/core.py= vs =tools/tamil_phonetic.py=
+  - Duplication of transliteration logic and tables in two places; risk of divergence.
+
+* Inconsistencies and potential bugs
+
+- GUI/server batch header mismatch:
+  - GUI builds 6-column TSV (=id, split, freq, glen, status, notes=).
+  - Server expects 7-column header (=id, word, freq, glen, splits, status, notes=).
+  - Emacs client matches server’s 7 columns.
+- Server =_handle_query= emits malformed rows (missing columns) relative to its own header.
+- GUI context menu and toggle-ignore use wrong status column index (=5= instead of =4=).
+- GUI =query_words()= references =self.accepted_words()= which is undefined; checking "Exclude accepted" will crash.
+- GUI uses =LEDGER_PATH= for both UI event log (=log_ui_event=) and data ledger (=update_ledger=), with incompatible headers; server’s =_load_ledger()= will fail to parse this mixed file.
+- Server =main()= uses undefined args (=args.wordlist=, =args.ledger=), and mixes =args.socket= and =profile.socket_path= inconsistently.
+- Trie: See Issues in the module section above.
+- Phonetic modules duplication: risk of future inconsistencies.
+
+* Recommendations (non-binding; for future tasks)
+- Unify transliteration code in one module (prefer the package =tamilphonetic=) and make GUI import that.
+- Align GUI batch TSV schema with server/Emacs (=REQUIRED_BATCH_HDR=) or relax server to accept the 6-col variant.
+- Separate UI event log file from data ledger to avoid header/content collisions.
+- Fix =self.accepted_words()= provision:
+  - Either implement a local accepted-words set from ledger or disable the checkbox when not available.
+- Correct wrong status column indices in GUI toggle features.
+- Fix server =_handle_query= row emission and =main()= args handling.
+- Clean dead code in =tamil_editor_demo.py=.
+- Revisit =Trie.words()= and =get_all_suffixes()= logic for correctness when prefix is not fully matched.
+
+* Appendix: Data formats
+
+- Word index TSV (=word-index.tsv=):
+  - Header: =word	freq	glen=
+  - Rows: Tamil word text, integer frequency, integer grapheme length.
+- GUI-local batch TSV (current):
+  - Header: =id	split	freq	glen	status	notes=
+  - Rows: id string, split text (word), frequency, grapheme length, status, notes.
+- Emacs/server-required batch TSV:
+  - Header: =id	word	freq	glen	splits	status	notes=
+- Server ledger (=LEDGER_HDR=):
+  - Header: =timestamp	batch	id	word	status	splits	notes=
+- GUI-local ledger (=update_ledger=):
+  - Header: =timestamp	batch	id	split	status	notes= (conflicts with server’s expected ledger header).
