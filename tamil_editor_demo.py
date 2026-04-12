@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QLa
 from PyQt5.QtGui import QKeySequence
 
 # Import our transliteration function from the separate library.
-from tools.tamil_phonetic import transliterate
+from tamilphonetic import transliterate
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s')
 
@@ -23,7 +23,7 @@ class PhoneticTextEdit(QTextEdit):
         # Add buffers to track state:
         self.committed = ""
         self.composition = ""
-    
+
     def commit_composition(self):
         """
         Commit the current composition by converting it to Tamil
@@ -37,7 +37,7 @@ class PhoneticTextEdit(QTextEdit):
                     result += PULLI
             self.committed += result
             self.composition = ""
-    
+
     def update_display(self):
         """
         Update the display by combining committed text with the transliteration
@@ -55,7 +55,7 @@ class PhoneticTextEdit(QTextEdit):
         cursor.setPosition(len(final))
         self.setTextCursor(cursor)
         self.blockSignals(False)
-    
+
     def is_possible_prefix(self, candidate):
         """
         Return True if candidate (a roman string) is either:
@@ -91,7 +91,7 @@ class PhoneticTextEdit(QTextEdit):
         cp = self.cursorPosition()
         # Normalize buffers for caret/selection position
         self._normalize_state_for_editing(current_text, cp)
-    
+
         if key == Qt.Key_Backspace:
             self._handle_backspace()
             event.accept(); return
