@@ -142,8 +142,8 @@ def _open_or_reset_tries(fwd_db_path, rev_db_path, overwrite: bool):
     except Exception:
         pass
     try:
-        fwd.INITIAL_NODE_CAPACITY = max(getattr(fwd, "INITIAL_NODE_CAPACITY", 10), 64)
-        rev.INITIAL_NODE_CAPACITY = max(getattr(rev, "INITIAL_NODE_CAPACITY", 10), 64)
+        fwd.INITIAL_NODE_CAPACITY = max(getattr(fwd, "INITIAL_NODE_CAPACITY", 10), 256)
+        rev.INITIAL_NODE_CAPACITY = max(getattr(rev, "INITIAL_NODE_CAPACITY", 10), 256)
     except Exception:
         pass
     return fwd, rev
@@ -217,7 +217,12 @@ def main():
     if args.build:
         os.makedirs(os.path.dirname(fwd_path), exist_ok=True)
         os.makedirs(os.path.dirname(rev_path), exist_ok=True)
-        build_tries(wl, fwd_path, rev_path, overwrite=args.overwrite, pbar=args.pbar)
+        build_tries(
+            wl, fwd_path, rev_path,
+            overwrite=args.overwrite, pbar=args.pbar,
+            min_glen=args.min_glen, max_glen=args.max_glen,
+            sort_by_word=args.sort_by_word
+        )
         print(f"Built tries: fwd={fwd_path} rev={rev_path} (wordlist={wl})")
         return
 

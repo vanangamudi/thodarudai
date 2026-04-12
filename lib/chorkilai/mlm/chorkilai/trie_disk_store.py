@@ -6,8 +6,9 @@ class TrieDiskStore:
     HEADER_FORMAT = "<4sIQQ"  # Magic (4s), version (32b), free_list_head (64b), root_offset (64b)
     HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
-    def __init__(self, filename, new=False):
+    def __init__(self, filename, new=False, flush_per_write=True):
         self.filename = filename
+        self.flush_per_write = flush_per_write
         if new or not os.path.exists(filename):
             # Create new file and write header
             with open(filename, "wb") as f:
@@ -36,7 +37,8 @@ class TrieDiskStore:
         self.mm.resize(offset + len(node_data))
         self.mm.seek(offset)
         self.mm.write(node_data)
-        self.mm.flush()  # flush allocated node data
+        if self.flush_per_write:
+            self.mm.flush()  # flush allocated node data
         return offset
 
     def read_node(self, offset: int) -> bytes:
@@ -67,5 +69,6 @@ class TrieDiskStore:
             # If node_data is smaller, pad with zeros.
             self.mm.seek(offset)
             self.mm.write(node_data.ljust(curr_len, b'\x00'))
-            self.mm.flush()
+            if self.flush_per_write:
+                self.mm.flush()
             return offset

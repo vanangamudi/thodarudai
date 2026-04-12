@@ -5,6 +5,7 @@ import struct
 import pdb
 import argparse
 import csv
+import struct
 
 from abc import ABC, abstractmethod
 from pprint import pprint, pformat
@@ -12,6 +13,9 @@ from tqdm import tqdm
 
 import arichuvadi as ari
 import chorkilai.utils as utils
+
+from .trie_disk_store import TrieDiskStore
+
 
 XSV_DELIMITER = '\t'
 LETTER_FIELD_SIZE = 8
@@ -149,8 +153,6 @@ class OnDiskTrie(BaseTrie):
     CHILD_RECORD_SIZE = 1 + LETTER_FIELD_SIZE + 8  # 1 byte key length, LETTER_FIELD_SIZE bytes key, 8 bytes pointer
 
     def __init__(self, db_path, new=False):
-        from .trie_disk_store import TrieDiskStore
-        import struct
         self.store = TrieDiskStore(db_path, new=new)
         if new:
             # Create a fresh root node.
@@ -232,8 +234,8 @@ class OnDiskTrie(BaseTrie):
             pos += LETTER_FIELD_SIZE
             ba[pos:pos+8] = self.struct.pack("<Q", child['child_ptr'])
             pos += 8
-        return bytes(ba
-)
+        return bytes(ba)
+
     def _create_empty_node(self) -> int:
         """Creates an empty node with initial capacity and returns its offset."""
         node = {
