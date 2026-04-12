@@ -72,26 +72,47 @@ class Trie(BaseTrie):
     def __repr__(self):   return self.root.__repr__()
     def __str__(self):    return self.__repr__()
 
+    def _find_child_ptr(self, node, letter):
+        for child in node['children']:
+            if child['key'] == letter:
+                return True, child['child_ptr']
+        return False, None
+
+    def _ensure_capacity_and_node(self, current_offset, parent_info, letter):
+        node = self._read_node(current_offset)
+        if node['child_count'] >= node['capacity']:
+            if parent_info is None:
+                current_offset = self._expand_node(self.root_offset, None, letter, current_offset, node)
+            else:
+                p_offset, p_node, p_letter = parent_info
+                current_offset = self._expand_node(p_offset, p_node, p_letter, current_offset, node)
+            node = self._read_node(current_offset)
+        return current_offset, node
+
+    def _append_child(self, current_offset, node, letter):
+        new_node_offset = self._create_empty_node()
+        node['children'].append({'key': letter, 'child_ptr': new_node_offset})
+        node['child_count'] += 1
+        updated_data = self._serialize_node(node)
+        self.store.write_node(current_offset, updated_data)
+        return new_node_offset, (current_offset, node, letter)
+
     def add(self, item):
-        node, i = self.find_prefix(item)
-        if i < len(item):
-            #increment count
-            j = 0
-            tnode = self.root
-            while j < i:
-                tnode.children[item[j]].count += 1
-                tnode = tnode.children[item[j]]
-                j += 1
-
-            # add new nodes
-            while i < len(item):
-                #new_node = Node(item[:i+1], count=1, level=i+1)
-                new_node = Node(item[i], count=1, level=i+1)
-                node.children[item[i]] = new_node
-                node = new_node
-                i += 1
-
-            node.is_complete = True
+        current_offset = self.root_offset
+        parent_info = None
+        for letter in item:
+            node = self._read_node(current_offset)
+            found, child_ptr = self._find_child_ptr(node, letter)
+            if found:
+                parent_info = (current_offset, node, letter)
+                current_offset = child_ptr
+                continue
+            current_offset, node = self._ensure_capacity_and_node(current_offset, parent_info, letter)
+            current_offset, parent_info = self._append_child(current_offset, node, letter)
+        final_node = self._read_node(current_offset)
+        final_node['is_terminal'] = 1
+        final_data = self._serialize_node(final_node)
+        self.store.write_node(current_offset, final_data)
 
     def lookup(self, word: str) -> bool:
         """Returns True if the complete word is present (i.e. the final node is marked complete)."""

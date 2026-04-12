@@ -548,6 +548,44 @@ class MainWindow(QMainWindow):
         })
         self.populate_table_from_results(combined)
 
+    def _benchmark_list_indexer(self, q, min_len, max_len, probe_limit):
+        idx = get_shared_word_index(self.wordlist_path)
+        t0 = time.perf_counter()
+        rows = idx.query_words(
+            prefix=q["prefix"], suffix=q["suffix"],
+            min_len=min_len, max_len=max_len,
+            limit=probe_limit, offset=0, regex=q["regex"]
+        )
+        elapsed_ms = int(round((time.perf_counter() - t0) * 1000.0))
+        return {"list_ms": elapsed_ms, "list_n": len(rows)}
+
+    def _benchmark_trie_indexer(self, q, min_len, max_len, probe_limit):
+        base_dir = os.path.dirname(self.wordlist_path)
+        fwd_path = FWD_TRIE_PATH or os.path.join(base_dir, "fwd.trie")
+        rev_path = REV_TRIE_PATH or os.path.join(base_dir, "rev.trie")
+        if not (os.path.exists(fwd_path) and os.path.exists(rev_path)):
+            raise RuntimeError(f"trie files not found (fwd={fwd_path}, rev={rev_path})")
+        idx = get_shared_trie_index(self.wordlist_path, fwd_path, rev_path)
+        t0 = time.perf_counter()
+        rows = idx.query_words(
+            prefix=q["prefix"], suffix=q["suffix"],
+            min_len=min_len, max_len=max_len,
+            limit=probe_limit, offset=0, regex=q["regex"]
+        )
+        elapsed_ms = int(round((time.perf_counter() - t0) * 1000.0))
+        return {"trie_ms": elapsed_ms, "trie_n": len(rows)}
+
+    def _build_bench_payload(self, q, min_len, max_len, probe_limit, results, errors):
+        payload = {
+            "prefix": q["prefix"], "suffix": q["suffix"], "regex": q["regex"],
+            "min_len": min_len, "max_len": (max_len if max_len is not None else ""),
+            "limit": probe_limit,
+            **results
+        }
+        if errors:
+            payload["errors"] = "; ".join(errors)
+        return payload
+
     def compare_indexers(self):
         """
         Run the current query parameters against both indexers and log timings.
@@ -557,59 +595,25 @@ class MainWindow(QMainWindow):
         q = self._read_query_fields()
         min_len, max_len = self.parse_length_spec(q["length_spec"])
         probe_limit = min(q["limit"] * 5, max(q["limit"] + 500, 5000))
-        results = {}
-        errors = []
-        # 1) List indexer (always available)
+        results, errors = {}, []
         try:
-            list_idx = get_shared_word_index(self.wordlist_path)
-            t0 = time.perf_counter()
-            rows = list_idx.query_words(
-                prefix=q["prefix"], suffix=q["suffix"],
-                min_len=min_len, max_len=max_len,
-                limit=probe_limit, offset=0, regex=q["regex"]
-            )
-            list_ms = (time.perf_counter() - t0) * 1000.0
-            results["list_ms"] = int(round(list_ms))
-            results["list_n"] = len(rows)
+            results.update(self._benchmark_list_indexer(q, min_len, max_len, probe_limit))
         except Exception as e:
             errors.append(f"list: {e}")
-        # 2) Trie indexer (only if trie files exist)
         try:
-            base_dir = os.path.dirname(self.wordlist_path)
-            fwd_path = FWD_TRIE_PATH or os.path.join(base_dir, "fwd.trie")
-            rev_path = REV_TRIE_PATH or os.path.join(base_dir, "rev.trie")
-            if not (os.path.exists(fwd_path) and os.path.exists(rev_path)):
-                raise RuntimeError(f"trie files not found (fwd={fwd_path}, rev={rev_path})")
-            trie_idx = get_shared_trie_index(self.wordlist_path, fwd_path, rev_path)
-            t0 = time.perf_counter()
-            rows = trie_idx.query_words(
-                prefix=q["prefix"], suffix=q["suffix"],
-                min_len=min_len, max_len=max_len,
-                limit=probe_limit, offset=0, regex=q["regex"]
-            )
-            trie_ms = (time.perf_counter() - t0) * 1000.0
-            results["trie_ms"] = int(round(trie_ms))
-            results["trie_n"] = len(rows)
+            results.update(self._benchmark_trie_indexer(q, min_len, max_len, probe_limit))
         except Exception as e:
             errors.append(f"trie: {e}")
-        payload = {
-            "prefix": q["prefix"], "suffix": q["suffix"], "regex": q["regex"],
-            "min_len": min_len, "max_len": (max_len if max_len is not None else ""),
-            "limit": probe_limit,
-            **results
-        }
-        if errors:
-            payload["errors"] = "; ".join(errors)
+        payload = self._build_bench_payload(q, min_len, max_len, probe_limit, results, errors)
         self.log_ui_event("BENCH_QUERY", payload)
         msg_lines = []
-        if "list_ms" in results:
-            msg_lines.append(f"list: {results['list_ms']} ms, {results['list_n']} rows")
-        else:
-            msg_lines.append("list: error")
-        if "trie_ms" in results:
-            msg_lines.append(f"trie: {results['trie_ms']} ms, {results['trie_n']} rows")
-        else:
-            msg_lines.append("trie: error")
+        msg_lines.append(f"list: {results['list_ms']} ms, {results['list_n']} rows" if "list_ms" in results else "list: error")
+        msg_lines.append(f"trie: {results['trie_ms']} ms, {results['trie_n']} rows" if "trie_ms" in results else "trie: error")
+        msg_lines.append(f"list: {results['list_ms']} ms, {results['list_n']} rows" if "list_ms" in results else "list: error")
+        msg_lines.append(f"trie: {results['trie_ms']} ms, {results['trie_n']} rows" if "trie_ms" in results else "trie: error")
+        if errors:
+            msg_lines.append("Errors: " + "; ".join(errors))
+        QMessageBox.information(self, "Indexer Benchmark", "\n".join(msg_lines))
         if errors:
             msg_lines.append("Errors: " + "; ".join(errors))
         from PyQt5.QtWidgets import QMessageBox
@@ -1049,67 +1053,75 @@ class MainWindow(QMainWindow):
         if not self.edited_ids:
             self.dirty = False
 
-    def apply_replace_to_cell(self):
-        find_text = self.find_edit.text()
-        replace_text = self.replace_edit.text()
-        normalized_replace = replace_text.replace(" ", TOKEN_DELIMITER)
-        if not find_text:
-            QMessageBox.warning(self, "Find/Replace", "Please enter text to find.")
-            return
-        indexes = self._selected_split_indexes()
-        if not indexes:
-            QMessageBox.warning(self, "Find/Replace", "No cells available in the splits column.")
-            return
-
-        # Freeze expensive UI behaviors during bulk edit
+    def _freeze_table_for_bulk_edit(self):
         header = self.table.horizontalHeader()
         from PyQt5.QtWidgets import QHeaderView
-        # Remember current resize mode of column 0 (we’ll assume all columns use the same mode)
         try:
             old_mode = header.sectionResizeMode(0)
         except Exception:
             old_mode = None
         old_sort = self.table.isSortingEnabled()
-
         self.bulk_editing = True
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(False)
         try:
-            # Disable auto-resize to avoid per-item width recomputation
-            try:
-                header.setSectionResizeMode(QHeaderView.Fixed)
-            except Exception:
-                pass
+            header.setSectionResizeMode(QHeaderView.Fixed)
+        except Exception:
+            pass
+        return old_mode, old_sort
 
-            changed_rows = self._replace_in_indexes(indexes, find_text, normalized_replace)
-            # Mark edits and backgrounds in one pass (signals/updates are still frozen)
-            self._mark_bulk_edits(changed_rows)
-        finally:
-            # Restore header mode
-            try:
-                if old_mode is not None:
-                    header.setSectionResizeMode(old_mode)
-                else:
-                    header.setSectionResizeMode(QHeaderView.ResizeToContents)
-            except Exception:
-                pass
-            self.table.setSortingEnabled(old_sort)
-            self.table.blockSignals(False)
-            # One-time resize and repaint at the end
-            try:
-                self.table.resizeColumnsToContents()
-            except Exception:
-                pass
-            self.table.setUpdatesEnabled(True)
-            self.bulk_editing = False
+    def _thaw_table_after_bulk_edit(self, old_mode, old_sort):
+        header = self.table.horizontalHeader()
+        from PyQt5.QtWidgets import QHeaderView
+        try:
+            if old_mode is not None:
+                header.setSectionResizeMode(old_mode)
+            else:
+                header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        except Exception:
+            pass
+        self.table.setSortingEnabled(old_sort)
+        self.table.blockSignals(False)
+        try:
+            self.table.resizeColumnsToContents()
+        except Exception:
+            pass
+        self.table.setUpdatesEnabled(True)
+        self.bulk_editing = False
 
-        count_replaced = len(changed_rows)
+    def _prepare_replace_inputs(self):
+        find_text = self.find_edit.text()
+        replace_text = self.replace_edit.text()
+        normalized_replace = replace_text.replace(" ", TOKEN_DELIMITER)
+        if not find_text:
+            QMessageBox.warning(self, "Find/Replace", "Please enter text to find.")
+            return None, None, None
+        indexes = self._selected_split_indexes()
+        if not indexes:
+            QMessageBox.warning(self, "Find/Replace", "No cells available in the splits column.")
+            return None, None, None
+        return find_text, normalized_replace, indexes
+
+    def _report_replace_outcome(self, count_replaced, find_text, normalized_replace):
         if count_replaced > 0:
             self.log_ui_event("REPLACE", {"find": find_text, "replace": normalized_replace, "cells_modified": count_replaced})
             QMessageBox.information(self, "Find/Replace", f"Replacement applied to {count_replaced} cell(s).")
         else:
             QMessageBox.information(self, "Find/Replace", "No replacements were made (find text not found).")
+    
+    def apply_replace_to_cell(self):
+        find_text, normalized_replace, indexes = self._prepare_replace_inputs()
+        if not find_text:
+            return
+        old_mode, old_sort = self._freeze_table_for_bulk_edit()
+        changed_rows = set()
+        try:
+            changed_rows = self._replace_in_indexes(indexes, find_text, normalized_replace)
+            self._mark_bulk_edits(changed_rows)
+        finally:
+            self._thaw_table_after_bulk_edit(old_mode, old_sort)
+        self._report_replace_outcome(len(changed_rows), find_text, normalized_replace)
 
     def sort_table_by_prefix(self):
         """Sorts the table rows by the numeric 'id' (column 0) ascending."""
