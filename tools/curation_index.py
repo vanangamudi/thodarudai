@@ -162,4 +162,4 @@ class CuratedIndex:
                 self.curation_counts[w] = self.curation_counts.get(w, 0) + 1
         self.curated_count += added
         self._last_mtime = time.time()
-        self.total_curation_entries = sum(self.curation_counts.values())
+        self.total_curation_entries += added

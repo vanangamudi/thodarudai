@@ -548,6 +548,73 @@ class MainWindow(QMainWindow):
         })
         self.populate_table_from_results(combined)
 
+    def compare_indexers(self):
+        """
+        Run the current query parameters against both indexers and log timings.
+        Does not alter the current table; shows a summary dialog and logs BENCH_QUERY.
+        """
+        import time, os
+        q = self._read_query_fields()
+        min_len, max_len = self.parse_length_spec(q["length_spec"])
+        probe_limit = min(q["limit"] * 5, max(q["limit"] + 500, 5000))
+        results = {}
+        errors = []
+        # 1) List indexer (always available)
+        try:
+            list_idx = get_shared_word_index(self.wordlist_path)
+            t0 = time.perf_counter()
+            rows = list_idx.query_words(
+                prefix=q["prefix"], suffix=q["suffix"],
+                min_len=min_len, max_len=max_len,
+                limit=probe_limit, offset=0, regex=q["regex"]
+            )
+            list_ms = (time.perf_counter() - t0) * 1000.0
+            results["list_ms"] = int(round(list_ms))
+            results["list_n"] = len(rows)
+        except Exception as e:
+            errors.append(f"list: {e}")
+        # 2) Trie indexer (only if trie files exist)
+        try:
+            base_dir = os.path.dirname(self.wordlist_path)
+            fwd_path = FWD_TRIE_PATH or os.path.join(base_dir, "fwd.trie")
+            rev_path = REV_TRIE_PATH or os.path.join(base_dir, "rev.trie")
+            if not (os.path.exists(fwd_path) and os.path.exists(rev_path)):
+                raise RuntimeError(f"trie files not found (fwd={fwd_path}, rev={rev_path})")
+            trie_idx = get_shared_trie_index(self.wordlist_path, fwd_path, rev_path)
+            t0 = time.perf_counter()
+            rows = trie_idx.query_words(
+                prefix=q["prefix"], suffix=q["suffix"],
+                min_len=min_len, max_len=max_len,
+                limit=probe_limit, offset=0, regex=q["regex"]
+            )
+            trie_ms = (time.perf_counter() - t0) * 1000.0
+            results["trie_ms"] = int(round(trie_ms))
+            results["trie_n"] = len(rows)
+        except Exception as e:
+            errors.append(f"trie: {e}")
+        payload = {
+            "prefix": q["prefix"], "suffix": q["suffix"], "regex": q["regex"],
+            "min_len": min_len, "max_len": (max_len if max_len is not None else ""),
+            "limit": probe_limit,
+            **results
+        }
+        if errors:
+            payload["errors"] = "; ".join(errors)
+        self.log_ui_event("BENCH_QUERY", payload)
+        msg_lines = []
+        if "list_ms" in results:
+            msg_lines.append(f"list: {results['list_ms']} ms, {results['list_n']} rows")
+        else:
+            msg_lines.append("list: error")
+        if "trie_ms" in results:
+            msg_lines.append(f"trie: {results['trie_ms']} ms, {results['trie_n']} rows")
+        else:
+            msg_lines.append("trie: error")
+        if errors:
+            msg_lines.append("Errors: " + "; ".join(errors))
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Indexer Benchmark", "\n".join(msg_lines))
+
     def build_tsv_lines(self):
         """
         Builds a list of strings representing TSV lines from the current table data.
@@ -595,27 +662,20 @@ class MainWindow(QMainWindow):
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
     def _compute_summary_snapshot(self):
-        glen_map = {}
-        index_words = set()
-        for w, fr, gl in self.word_index.words:
-            index_words.add(w)
-            glen_map[w] = gl
+        # Use precomputed maps; avoid scanning the full word list on every save.
+        glen_map = getattr(self.word_index, "glen_map", {})
+        index_words = getattr(self.word_index, "index_words", set())
         total_words = len(index_words)
         curated_set = getattr(self.curated, "curated_words", set())
-        curated_in_index = {w for w in curated_set if w in index_words}
-        remaining_set = index_words - curated_in_index
+        curated_in_index = curated_set & index_words
+        remaining_distinct = total_words - len(curated_in_index)
         total_curations = getattr(self.curated, "total_curation_entries", 0)
-        curated_len = Counter(glen_map[w] for w in curated_in_index if w in glen_map)
-        remaining_len = Counter(glen_map[w] for w in remaining_set if w in glen_map)
         return {
             "total_words": total_words,
             "curated_distinct": len(curated_in_index),
-            "remaining_distinct": len(remaining_set),
+            "remaining_distinct": remaining_distinct,
             "curation_entries": total_curations,
-            "length_distribution": {
-                "curated": dict(curated_len),
-                "remaining": dict(remaining_len)
-            }
+            "length_distribution": {"curated": {}, "remaining": {}},
         }
 
     def append_summary_ledger(self, batch_name):
@@ -1000,16 +1060,50 @@ class MainWindow(QMainWindow):
         if not indexes:
             QMessageBox.warning(self, "Find/Replace", "No cells available in the splits column.")
             return
-        # Bulk edit: block itemChanged signals and avoid per-row logging/painting
+
+        # Freeze expensive UI behaviors during bulk edit
+        header = self.table.horizontalHeader()
+        from PyQt5.QtWidgets import QHeaderView
+        # Remember current resize mode of column 0 (we’ll assume all columns use the same mode)
+        try:
+            old_mode = header.sectionResizeMode(0)
+        except Exception:
+            old_mode = None
+        old_sort = self.table.isSortingEnabled()
+
         self.bulk_editing = True
         self.table.blockSignals(True)
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(False)
         try:
+            # Disable auto-resize to avoid per-item width recomputation
+            try:
+                header.setSectionResizeMode(QHeaderView.Fixed)
+            except Exception:
+                pass
+
             changed_rows = self._replace_in_indexes(indexes, find_text, normalized_replace)
+            # Mark edits and backgrounds in one pass (signals/updates are still frozen)
+            self._mark_bulk_edits(changed_rows)
         finally:
+            # Restore header mode
+            try:
+                if old_mode is not None:
+                    header.setSectionResizeMode(old_mode)
+                else:
+                    header.setSectionResizeMode(QHeaderView.ResizeToContents)
+            except Exception:
+                pass
+            self.table.setSortingEnabled(old_sort)
             self.table.blockSignals(False)
+            # One-time resize and repaint at the end
+            try:
+                self.table.resizeColumnsToContents()
+            except Exception:
+                pass
+            self.table.setUpdatesEnabled(True)
             self.bulk_editing = False
-        # Now, mark edits and backgrounds in one pass
-        self._mark_bulk_edits(changed_rows)
+
         count_replaced = len(changed_rows)
         if count_replaced > 0:
             self.log_ui_event("REPLACE", {"find": find_text, "replace": normalized_replace, "cells_modified": count_replaced})
@@ -1191,7 +1285,10 @@ class MainWindow(QMainWindow):
         params_row.addWidget(QLabel("Curated %:"))
         params_row.addWidget(self.curated_ratio_spin)
         params_row.addWidget(self.query_btn)
-    
+        compare_btn = QPushButton("Compare Indexers")
+        compare_btn.setToolTip("Run the same query with list vs trie indexers and log timings")
+        compare_btn.clicked.connect(self.compare_indexers)
+        params_row.addWidget(compare_btn)
         self._add_new_window_buttons(params_row)
         return params_row
 
