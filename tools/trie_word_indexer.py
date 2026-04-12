@@ -13,6 +13,7 @@ from typing import List, Tuple, Dict, Iterable
 
 import arichuvadi as ari
 from chorkilai.trie import OnDiskTrie
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 RankRec = Tuple[str, int, int]  # (word, freq, glen)
 
@@ -178,16 +179,75 @@ def _populate_tries(fwd, rev, wordlist_path, pbar: bool, min_glen=None, max_glen
         fwd.add(lt)
         rev.add(list(reversed(lt)))
 
+def _populate_trie(trie, wordlist_path, pbar: bool, min_glen=None, max_glen=None, sort_by_word=False, reverse=False):
+    it = _iter_wordlist_words(wordlist_path, min_glen=min_glen, max_glen=max_glen)
+    # Optional pre-sort to improve prefix locality (uses memory)
+    if sort_by_word:
+        try:
+            it = sorted(it)
+        except Exception:
+            pass
+    if pbar:
+        try:
+            from tqdm import tqdm
+            it = tqdm(it, desc=f"Building {'rev' if reverse else 'fwd'} trie", unit="w")
+        except Exception:
+            pass
+    for w in it:
+        lt = _letters(w)
+        if not lt:
+            continue
+        if reverse:
+            trie.add(list(reversed(lt)))
+        else:
+            trie.add(lt)
+
+def _build_one_trie(args_tuple):
+    """
+    Worker to build a single trie file.
+    args_tuple: (db_path, overwrite, wordlist_path, pbar, min_glen, max_glen, sort_by_word, reverse)
+    """
+    (db_path, overwrite, wordlist_path, pbar, min_glen, max_glen, sort_by_word, reverse) = args_tuple
+    trie = OnDiskTrie(db_path, new=(overwrite or not os.path.exists(db_path)))
+    # Speed up build: disable per-write flush
+    try:
+        trie.store.flush_per_write = False
+    except Exception:
+        pass
+    try:
+        trie.INITIAL_NODE_CAPACITY = max(getattr(trie, "INITIAL_NODE_CAPACITY", 10), 256)
+    except Exception:
+        pass
+    try:
+        _populate_trie(trie, wordlist_path, pbar=pbar,
+                       min_glen=min_glen, max_glen=max_glen,
+                       sort_by_word=sort_by_word, reverse=reverse)
+    finally:
+        trie.close()
+    return db_path
+
 def build_tries(wordlist_path: str, fwd_db_path: str, rev_db_path: str,
                 overwrite: bool = False, pbar: bool = False,
-                min_glen=None, max_glen=None, sort_by_word=False):
-    fwd, rev = _open_or_reset_tries(fwd_db_path, rev_db_path, overwrite)
-    try:
-        _populate_tries(fwd, rev, wordlist_path, pbar=pbar,
-                        min_glen=min_glen, max_glen=max_glen,
-                        sort_by_word=sort_by_word)
-    finally:
-        fwd.close(); rev.close()
+                min_glen=None, max_glen=None, sort_by_word=False, parallel=False):
+    if parallel:
+        # Build forward and reverse tries concurrently
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        tasks = [
+            (fwd_db_path, overwrite, wordlist_path, pbar, min_glen, max_glen, sort_by_word, False),
+            (rev_db_path, overwrite, wordlist_path, pbar, min_glen, max_glen, sort_by_word, True),
+        ]
+        with ProcessPoolExecutor(max_workers=2) as ex:
+            futs = [ex.submit(_build_one_trie, t) for t in tasks]
+            for fut in as_completed(futs):
+                _ = fut.result()  # propagate exceptions
+    else:
+        fwd, rev = _open_or_reset_tries(fwd_db_path, rev_db_path, overwrite)
+        try:
+            _populate_tries(fwd, rev, wordlist_path, pbar=pbar,
+                            min_glen=min_glen, max_glen=max_glen,
+                            sort_by_word=sort_by_word)
+        finally:
+            fwd.close(); rev.close()
 
 def main():
     ap = argparse.ArgumentParser(description="Trie-backed word indexer")
@@ -197,6 +257,7 @@ def main():
     ap.add_argument("--wordlist", default=None, help="Path to word-index.tsv (default: profile.wordlist_path)")
     ap.add_argument("--fwd", default=None, help="Path to forward trie db file (default: <profile-dir>/fwd.trie)")
     ap.add_argument("--rev", default=None, help="Path to reverse trie db file (default: <profile-dir>/rev.trie)")
+    ap.add_argument("--parallel", action="store_true", help="Build forward and reverse tries in parallel")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing trie files when building")
     ap.add_argument("--query_prefix", default="", help="Test query: prefix")
     ap.add_argument("--query_suffix", default="", help="Test query: suffix")
@@ -221,7 +282,7 @@ def main():
             wl, fwd_path, rev_path,
             overwrite=args.overwrite, pbar=args.pbar,
             min_glen=args.min_glen, max_glen=args.max_glen,
-            sort_by_word=args.sort_by_word
+            sort_by_word=args.sort_by_word, parallel=args.parallel
         )
         print(f"Built tries: fwd={fwd_path} rev={rev_path} (wordlist={wl})")
         return
