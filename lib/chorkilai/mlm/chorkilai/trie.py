@@ -389,6 +389,7 @@ class OnDiskTrie(BaseTrie):
         for record in node.get("children", {}):
             letter, child_offset = record.values()
             child_node = self._read_node(child_offset)
+
             results.extend(self._collect_suffixes(child_node, current_suffix + letter))
         return results
 
@@ -441,44 +442,57 @@ def build_trie(filepaths, use_mmap=False, db_path=None, db_flush=False, pbarp=Tr
     return trie
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Trie CLI: Choose backing store (in-memory or mmap).")
-    parser.add_argument("--mmap", action="store_true", help="Use mmap-backed trie instead of in-memory.")
-    parser.add_argument("--mmap-flush", action="store_true", help="Delete existing mmap store and create new one")
+    parser = argparse.ArgumentParser(description="Trie CLI: build or query (in-memory or mmap).")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--build", action="store_true", help="Build a trie from input files and exit")
+    mode.add_argument("--query", action="store_true", help="Load an existing trie and run non-interactive queries")
+    parser.add_argument("--mmap", action="store_true", help="Use mmap-backed trie instead of in-memory")
+    parser.add_argument("--mmap-flush", action="store_true", help="For build: delete existing mmap store and create new one")
     parser.add_argument("--db-path", type=str, default="data/tamil_trie_ondisk.db",
-                        help="Path to store/read the mmap trie binary file.")
-    parser.add_argument("--suffixes", action='store_true',
-                        help="prefix for which to list all the exisitng suffixes")
+                        help="Path to store/read the mmap trie binary file")
     parser.add_argument("--max-entries", type=int, default=None,
-                        help="number of entries to load onto the trie")
-
-    parser.add_argument('filepaths', nargs='+', help='paths to files that contain words to be loaded')
-
+                        help="For build: limit number of entries loaded")
+    parser.add_argument("--lookup", default=None, help="For query: exact-lookup word (Tamil text)")
+    parser.add_argument("--prefix", default=None, help="For query: list words starting with this Tamil prefix")
+    parser.add_argument("--limit", type=int, default=100, help="For query: max number of results for --prefix")
+    parser.add_argument("--pbar", action="store_true", help="Show progress bar when loading from files (build)")
+    parser.add_argument("filepaths", nargs="*", help="For build (or in-memory query), files with one word per line")
+    
     args = parser.parse_args()
-
+    
     use_mmap = args.mmap
     db_path = args.db_path
     db_flush = args.mmap_flush
-
-    print(args.filepaths)
-
-    trie_obj = build_trie(args.filepaths, use_mmap=use_mmap, db_path=db_path, db_flush=db_flush, max_entries=args.max_entries)
-
-    word = input('> ')
-    while word:
+    
+    if args.build:
+        if not args.filepaths:
+            raise SystemExit("--build requires at least one input file (words per line)")
+        t = get_trie(use_mmap, db_path, db_flush)
         try:
-            if not word.strip():
-                break
-            word = ari.TamilStr(word)
-            print(word, repr(word))
-            if args.suffixes:
-                for item in trie_obj.get_all_suffixes(word):
-                    print(item)
-            else:
-                print('இருக்குதா? {}'.format(
-                    'இருக்கு' if trie_obj.lookup(word) else 'இல்லை'))
-            word = input('> ')
-        except KeyboardInterrupt:
-            break
-
-
-    trie_obj.close()
+            t = load_files(args.filepaths, t, pbarp=args.pbar, max_entries=args.max_entries)
+        finally:
+            t.close()
+        print(f"Built trie ({'mmap' if use_mmap else 'in-memory'}) from {len(args.filepaths)} file(s). "
+              f"{'Wrote to ' + db_path if use_mmap else 'Note: in-memory trie not persisted.'}")
+        raise SystemExit(0)
+    
+    if args.query:
+        if use_mmap:
+            t = get_trie(True, db_path, db_flush=False)
+        else:
+            if not args.filepaths:
+                raise SystemExit("--query with in-memory trie requires filepaths to load")
+            t = get_trie(False, None, False)
+            t = load_files(args.filepaths, t, pbarp=args.pbar, max_entries=args.max_entries)
+        try:
+            if args.lookup is not None:
+                q = ari.TamilStr(args.lookup)
+                print("1" if t.lookup(q) else "0")
+            if args.prefix is not None:
+                p = ari.TamilStr(args.prefix)
+                results = t.get_all_suffixes(p)
+                for w in (results[:args.limit] if args.limit else results):
+                    print(w)
+        finally:
+            t.close()
+        raise SystemExit(0)
