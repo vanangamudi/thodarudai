@@ -64,6 +64,10 @@ class TrieWordIndex:
         # Open existing tries (built via --build)
         self.fwd = OnDiskTrie(fwd_db_path, new=False)
         self.rev = OnDiskTrie(rev_db_path, new=False)
+        # Expose metadata to match WordIndex
+        self.words = sorted(((w, fr, gl) for w, (fr, gl) in self.meta.items()), key=lambda rec: (-rec[2], -rec[1], rec[0]))
+        self.glen_map = {w: gl for w, (_, gl) in self.meta.items()}
+        self.index_words = set(self.glen_map.keys())
 
     def close(self):
         try:
@@ -114,14 +118,80 @@ class TrieWordIndex:
             out.append(_concat_letters(full))
         return out
 
+    def _compile_regex(self, pattern: str):
+        if not pattern:
+            return None
+        try:
+            return re.compile(pattern)
+        except re.error:
+            return None
+
+    def _build_candidate_set(self, prefix: str, suffix: str):
+        """
+        Build candidate set from tries:
+          - prefix only: all words under forward trie node
+          - suffix only: all words under reverse trie node (reversed tokens)
+          - both: intersection of the two sets
+          - none: return None (means use all meta keys)
+        """
+        cand_set = None
+        if prefix:
+            cand_set = set(self._candidates_prefix(prefix))
+        if suffix:
+            suff = set(self._candidates_suffix(suffix))
+            cand_set = suff if cand_set is None else (cand_set & suff)
+        return cand_set
+
+    def _iter_candidate_words(self, cand_set):
+        """Iterator over candidate words (set or all known words)."""
+        return cand_set if cand_set is not None else self.meta.keys()
+
+    def _passes_filters(self, w: str, fr: int, gl: int,
+                        prefix: str, suffix: str, compiled_rx, min_len, max_len, exclude_fn):
+        if gl < min_len:
+            return False
+        if max_len is not None and gl > max_len:
+            return False
+        if prefix and not w.startswith(prefix):
+            return False
+        if suffix and not w.endswith(suffix):
+            return False
+        if compiled_rx and not compiled_rx.search(w):
+            return False
+        if exclude_fn and exclude_fn(w):
+            return False
+        return True
+
+    def _collect_ranked(self, cand_iter, prefix, suffix, compiled_rx, min_len, max_len, exclude_fn, need):
+        """
+        Stream-filter candidates using meta, collect up to 'need' items unsliced, then sort canonically.
+        """
+        out = []
+        for w in cand_iter:
+            meta = self.meta.get(w)
+            if not meta:
+                continue
+            fr, gl = meta
+            if not self._passes_filters(w, fr, gl, prefix, suffix, compiled_rx, min_len, max_len, exclude_fn):
+                continue
+            out.append((w, fr, gl))
+            if need is not None and len(out) >= need:
+                break
+        out.sort(key=lambda rec: (-rec[2], -rec[1], rec[0]))
+        return out
+
+    def _finalize_slice(self, rows, offset, limit):
+        if offset:
+            rows = rows[offset:]
+        if limit is not None and len(rows) > limit:
+            rows = rows[:limit]
+        return rows
+
     def query_words(self,
                     prefix: str = "", suffix: str = "",
                     min_len: int = 1, max_len=None,
                     limit: int = 200, offset: int = 0,
                     exclude_fn=None, regex: str = "") -> List[RankRec]:
-        """
-        Returns [(word,freq,glen), ...] honoring filters and canonical ordering.
-        """
         compiled_rx = self._compile_regex(regex)
         cand_set = self._build_candidate_set(prefix, suffix)
         cand_iter = self._iter_candidate_words(cand_set)
