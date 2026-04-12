@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
 
 
 from tools.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
+from tools.trie_word_indexer import TrieWordIndex
 from tools.curation_index import CuratedIndex
 from tools.word_indexer import WordIndex
 
@@ -51,6 +52,23 @@ def get_shared_word_index(wordlist_path):
     else:
         logging.info("Reusing shared WordIndex: %s (%d words)", wordlist_path, len(wi.words))
     return wi
+
+# Indexer selection and trie cache
+INDEXER_KIND = "list"  # or "trie"
+FWD_TRIE_PATH = None
+REV_TRIE_PATH = None
+
+TRIE_INDEX_CACHE = {}
+def get_shared_trie_index(wordlist_path, fwd_path, rev_path):
+    key = (os.path.abspath(wordlist_path), os.path.abspath(fwd_path), os.path.abspath(rev_path))
+    ti = TRIE_INDEX_CACHE.get(key)
+    if ti is None:
+        ti = TrieWordIndex(wordlist_path, fwd_path, rev_path)
+        TRIE_INDEX_CACHE[key] = ti
+        logging.info("Loaded TrieWordIndex once: %s (fwd=%s, rev=%s)", wordlist_path, fwd_path, rev_path)
+    else:
+        logging.info("Reusing shared TrieWordIndex: %s", wordlist_path)
+    return ti
 
 TOKEN_DELIMITER = " "
 BATCHES_DIR = "data/batches"
@@ -334,7 +352,16 @@ class MainWindow(QMainWindow):
         logging.info("Batches directory: %s", self.batch_dir)
         os.makedirs(self.batch_dir, exist_ok=True)
         self.wordlist_path = WORDLIST_PATH
-        self.word_index = get_shared_word_index(self.wordlist_path)
+        # Choose indexer
+        if INDEXER_KIND == "trie":
+            base_dir = os.path.dirname(self.wordlist_path)
+            fwd_path = FWD_TRIE_PATH or os.path.join(base_dir, "fwd.trie")
+            rev_path = REV_TRIE_PATH or os.path.join(base_dir, "rev.trie")
+            self.word_index = get_shared_trie_index(self.wordlist_path, fwd_path, rev_path)
+            self.indexer_kind = "trie"
+        else:
+            self.word_index = get_shared_word_index(self.wordlist_path)
+            self.indexer_kind = "list"
         self.curated = get_shared_curated_index(self.batch_dir)
         logging.info("Curated index (from batches) loaded: %d word(s)", self.curated.curated_count)
 
@@ -439,14 +466,17 @@ class MainWindow(QMainWindow):
         }
 
     def _probe_raw_results(self, q):
-        """Fetch raw rows (word,freq,glen) with a larger probe limit to allow filtering."""
+        """Fetch raw rows (word,freq,glen) and measure elapsed time (ms)."""
         min_len, max_len = self.parse_length_spec(q["length_spec"])
         probe_limit = min(q["limit"] * 5, max(q["limit"] + 500, 5000))
-        return self.word_index.query_words(
+        t0 = time.perf_counter()
+        rows = self.word_index.query_words(
             prefix=q["prefix"], suffix=q["suffix"],
             min_len=min_len, max_len=max_len,
             limit=probe_limit, offset=0, regex=q["regex"]
         )
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        return rows, elapsed_ms
 
     def _apply_negative_filters(self, rows, q):
         """Filter out rows matching any negative conditions."""
@@ -506,11 +536,16 @@ class MainWindow(QMainWindow):
         self.curated.maybe_reload_on_change()
         q = self._read_query_fields()
         self._log_query_event(q)
-        raw = self._probe_raw_results(q)
+        raw, elapsed_ms = self._probe_raw_results(q)
         eligible = self._apply_negative_filters(raw, q)
         new_rows, old_rows = self._partition_new_old(eligible)
         combined, shown_new, shown_curated = self._pick_curated_and_new(new_rows, old_rows, q["limit"], q["curated_ratio"])
         self._log_filter_stats(raw, new_rows, old_rows, shown_new, shown_curated, q["curated_ratio"])
+        self.log_ui_event("QUERY_TIME", {
+            "indexer": getattr(self, "indexer_kind", "list"),
+            "elapsed_ms": int(round(elapsed_ms)),
+            "queried": len(raw)
+        })
         self.populate_table_from_results(combined)
 
     def build_tsv_lines(self):
@@ -1488,6 +1523,9 @@ if __name__ == "__main__":
     parser.add_argument("--base_dir", default=None, help="Optional base directory")
     parser.add_argument("--ui_scale", type=float, default=1.0, help="UI scale multiplier for fonts and sizes (e.g., 1.25)")
     parser.add_argument("--font_size", type=int, default=None, help="Base font size in points (overrides ui_scale-derived size)")
+    parser.add_argument("--indexer", choices=["list", "trie"], default="list", help="Choose word indexer: classic list or trie-based")
+    parser.add_argument("--fwd_trie", default=None, help="Path to forward trie db file (default: <profile-dir>/fwd.trie)")
+    parser.add_argument("--rev_trie", default=None, help="Path to reverse trie db file (default: <profile-dir>/rev.trie)")
     args = parser.parse_args()
     profile = Profile(name=args.profile, base_dir=args.base_dir)
     import os
@@ -1496,6 +1534,15 @@ if __name__ == "__main__":
     BATCHES_DIR = os.path.abspath(profile.batches_dir)
     UI_LOG_PATH = os.path.abspath(profile.ui_log_path)
     REMINDERS_PATH = os.path.abspath(profile.reminders_path)
+    # Indexer selection globals
+    INDEXER_KIND = args.indexer
+    if INDEXER_KIND == "trie":
+        base_dir = os.path.dirname(WORDLIST_PATH)
+        FWD_TRIE_PATH = args.fwd_trie or os.path.join(base_dir, "fwd.trie")
+        REV_TRIE_PATH = args.rev_trie or os.path.join(base_dir, "rev.trie")
+        logging.info("Using trie indexer (fwd=%s, rev=%s)", FWD_TRIE_PATH, REV_TRIE_PATH)
+    else:
+        logging.info("Using classic list indexer")
 
     app = QApplication(sys.argv)
     from PyQt5.QtGui import QFont

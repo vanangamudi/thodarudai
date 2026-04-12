@@ -3,7 +3,7 @@ import mmap
 import struct
 
 class TrieDiskStore:
-    HEADER_FORMAT = "<4sIII"  # Magic (4s), version, free_list_head, root_offset
+    HEADER_FORMAT = "<4sIQQ"  # Magic (4s), version (32b), free_list_head (64b), root_offset (64b)
     HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
     def __init__(self, filename, new=False):

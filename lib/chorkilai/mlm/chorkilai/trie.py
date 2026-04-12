@@ -146,7 +146,7 @@ class OnDiskTrie(BaseTrie):
     # Total header size = 9 bytes.
     HEADER_SIZE = 9
     INITIAL_NODE_CAPACITY = 10
-    CHILD_RECORD_SIZE = 1 + LETTER_FIELD_SIZE + 4  # 1 byte key length, LETTER_FIELD_SIZE bytes key, 4 bytes pointer
+    CHILD_RECORD_SIZE = 1 + LETTER_FIELD_SIZE + 8  # 1 byte key length, LETTER_FIELD_SIZE bytes key, 8 bytes pointer
 
     def __init__(self, db_path, new=False):
         from .trie_disk_store import TrieDiskStore
@@ -171,7 +171,7 @@ class OnDiskTrie(BaseTrie):
             if magic != b"TRIE":
                 raise ValueError("Invalid file format")
             self.root_offset = root_offset
-            self._root_offset = self.root_offset
+        self._root_offset = self.root_offset
 
     def _node_record_size(self, capacity: int) -> int:
         """Computes node record size given a children capacity."""
@@ -193,8 +193,8 @@ class OnDiskTrie(BaseTrie):
             pos += 1
             key_bytes = data[pos:pos+LETTER_FIELD_SIZE]
             pos += LETTER_FIELD_SIZE
-            child_ptr = self.struct.unpack("<I", data[pos:pos+4])[0]
-            pos += 4
+            child_ptr = self.struct.unpack("<Q", data[pos:pos+8])[0]
+            pos += 8
             key = key_bytes[:key_len].decode("utf-8", errors="ignore")
             if key_len > 0:
                 children.append({'key': key, 'child_ptr': child_ptr})
@@ -230,8 +230,8 @@ class OnDiskTrie(BaseTrie):
             key_padded = key_bytes.ljust(LETTER_FIELD_SIZE, b'\x00')
             ba[pos:pos+LETTER_FIELD_SIZE] = key_padded
             pos += LETTER_FIELD_SIZE
-            ba[pos:pos+4] = self.struct.pack("<I", child['child_ptr'])
-            pos += 4
+            ba[pos:pos+8] = self.struct.pack("<Q", child['child_ptr'])
+            pos += 8
         return bytes(ba
 )
     def _create_empty_node(self) -> int:
@@ -410,29 +410,32 @@ def get_trie(use_mmap=False, db_path=None, db_flush=False):
          trie = Trie()
     return trie
 
-def load_files(filepaths, trie, pbarp=False):
+def load_files(filepaths, trie, pbarp=False, max_entries=None):
     for filepath in filepaths:
         print('loading {}...'.format(filepath))
         if pbarp:
             pbar = tqdm(utils.openfile(filepath), ncols=100)
         else:
             pbar = utils.openfile(filepath)
-        for item in csv.reader(pbar, delimiter=XSV_DELIMITER):
+        for i, item in enumerate(csv.reader(pbar, delimiter=XSV_DELIMITER)):
+            if max_entries and i > max_entries:
+                break
             try:
                 token, *count = item
                 if token:
                     trie.add(ari.get_letters_coding(token))
-                    # if pbarp:
-                    #     pbar.set_description(token)
+                    #print(ari.get_letters_coding(token))
+                    if pbarp:
+                        pbar.set_description(token)
             except Exception as e:
                 print("Error processing {}: {}".format(item, e))
 
     return trie
 
-def build_trie(filepaths, use_mmap=False, db_path=None, db_flush=False, pbarp=True):
+def build_trie(filepaths, use_mmap=False, db_path=None, db_flush=False, pbarp=True, max_entries=None):
     trie = get_trie(use_mmap, db_path, db_flush)
     if db_flush:
-        trie = load_files(filepaths, trie, pbarp)
+        trie = load_files(filepaths, trie, pbarp, max_entries)
     return trie
 
 if __name__ == '__main__':
@@ -443,6 +446,9 @@ if __name__ == '__main__':
                         help="Path to store/read the mmap trie binary file.")
     parser.add_argument("--suffixes", action='store_true',
                         help="prefix for which to list all the exisitng suffixes")
+    parser.add_argument("--max-entries", type=int, default=None,
+                        help="number of entries to load onto the trie")
+
     parser.add_argument('filepaths', nargs='+', help='paths to files that contain words to be loaded')
 
     args = parser.parse_args()
@@ -453,7 +459,7 @@ if __name__ == '__main__':
 
     print(args.filepaths)
 
-    trie_obj = build_trie(args.filepaths, use_mmap=use_mmap, db_path=db_path, db_flush=db_flush)
+    trie_obj = build_trie(args.filepaths, use_mmap=use_mmap, db_path=db_path, db_flush=db_flush, max_entries=args.max_entries)
 
     word = input('> ')
     while word:

@@ -7,6 +7,7 @@ Builds and queries forward and reverse tries for fast prefix/suffix lookup.
 
 import os
 import re
+from tools.profile import Profile
 import argparse
 from typing import List, Tuple, Dict, Iterable
 
@@ -19,23 +20,28 @@ def _rank_key(rec: RankRec):
     # Canonical: (-glen, -freq, word)
     return (-rec[2], -rec[1], rec[0])
 
-def _load_word_meta(wordlist_path: str) -> Dict[str, Tuple[int,int]]:
-    """Load word -> (freq,glen) from word-index.tsv"""
-    meta = {}
+def _parse_word_index_rows(wordlist_path):
+    """Yield (word, freq, glen) rows from a word-index.tsv safely."""
     with open(wordlist_path, "r", encoding="utf-8") as f:
         hdr = f.readline().strip().split("\t")
         idx = {h: i for i, h in enumerate(hdr)}
         for ln in f:
             if not ln.strip():
                 continue
-            c = ln.rstrip("\n").split("\t")
+            cols = ln.rstrip("\n").split("\t")
             try:
-                w = c[idx["word"]]
-                fr = int(c[idx["freq"]])
-                gl = int(c[idx["glen"]])
+                w = cols[idx["word"]]
+                fr = int(cols[idx["freq"]])
+                gl = int(cols[idx["glen"]])
+                yield (w, fr, gl)
             except Exception:
                 continue
-            meta[w] = (fr, gl)
+
+def _load_word_meta(wordlist_path: str) -> Dict[str, Tuple[int,int]]:
+    """Load word -> (freq,glen) from word-index.tsv"""
+    meta = {}
+    for w, fr, gl in _parse_word_index_rows(wordlist_path):
+        meta[w] = (fr, gl)
     return meta
 
 def _letters(s: str) -> List[str]:
@@ -107,121 +113,118 @@ class TrieWordIndex:
             out.append(_concat_letters(full))
         return out
 
-    def query_words(self, prefix: str = "", suffix: str = "", min_len: int = 1, max_len=None,
-                    limit: int = 200, offset: int = 0, exclude_fn=None, regex: str = "") -> List[RankRec]:
+    def query_words(self,
+                    prefix: str = "", suffix: str = "",
+                    min_len: int = 1, max_len=None,
+                    limit: int = 200, offset: int = 0,
+                    exclude_fn=None, regex: str = "") -> List[RankRec]:
         """
         Returns [(word,freq,glen), ...] honoring filters and canonical ordering.
         """
-        # Build a candidate pool from tries
-        cand_set = None
-        if prefix:
-            cand_set = set(self._candidates_prefix(prefix))
-        if suffix:
-            suff_cands = set(self._candidates_suffix(suffix))
-            cand_set = suff_cands if cand_set is None else (cand_set & suff_cands)
-        if cand_set is None:
-            # No prefix/suffix; fall back to all known words in metadata
-            cand_iter = self.meta.keys()
-        else:
-            cand_iter = cand_set
-
-        # Optional regex
-        compiled_rx = None
-        if regex:
-            try:
-                compiled_rx = re.compile(regex)
-            except re.error:
-                compiled_rx = None
-
-        # Stream filter + collect with meta
-        out = []
+        compiled_rx = self._compile_regex(regex)
+        cand_set = self._build_candidate_set(prefix, suffix)
+        cand_iter = self._iter_candidate_words(cand_set)
         need = (offset + limit) if limit is not None else None
-        for w in cand_iter:
-            fr_gl = self.meta.get(w)
-            if not fr_gl:
-                continue
-            fr, gl = fr_gl
-            if gl < min_len:
-                continue
-            if max_len is not None and gl > max_len:
-                continue
-            if prefix and not w.startswith(prefix):
-                continue
-            if suffix and not w.endswith(suffix):
-                continue
-            if compiled_rx and not compiled_rx.search(w):
-                continue
-            if exclude_fn and exclude_fn(w):
-                continue
-            out.append((w, fr, gl))
-            if need is not None and len(out) >= need:
-                # note: we still sort below; early stop reduces memory
-                break
+        out = self._collect_ranked(cand_iter, prefix, suffix,
+                                   compiled_rx, min_len, max_len,
+                                   exclude_fn, need)
+        return self._finalize_slice(out, offset, limit)
 
-        # Canonical order and slice
-        out.sort(key=_rank_key)
-        if offset:
-            out = out[offset:]
-        if limit is not None and len(out) > limit:
-            out = out[:limit]
-        return out
+def _open_or_reset_tries(fwd_db_path, rev_db_path, overwrite: bool):
+    """Open new or reset tries according to overwrite flag."""
+    import os
+    fwd = OnDiskTrie(fwd_db_path, new=(overwrite or not os.path.exists(fwd_db_path)))
+    rev = OnDiskTrie(rev_db_path, new=(overwrite or not os.path.exists(rev_db_path)))
+    # Speed up build: disable per-write flushes; larger initial capacity for new nodes
+    try:
+        fwd.store.flush_per_write = False
+        rev.store.flush_per_write = False
+    except Exception:
+        pass
+    try:
+        fwd.INITIAL_NODE_CAPACITY = max(getattr(fwd, "INITIAL_NODE_CAPACITY", 10), 64)
+        rev.INITIAL_NODE_CAPACITY = max(getattr(rev, "INITIAL_NODE_CAPACITY", 10), 64)
+    except Exception:
+        pass
+    return fwd, rev
 
-def build_tries(wordlist_path: str, fwd_db_path: str, rev_db_path: str, overwrite: bool = False):
-    """
-    Build forward and reverse tries from word-index.tsv.
-    Forward trie stores letter sequences; reverse trie stores reversed sequences.
-    """
-    # Create fwd and rev tries
-    fwd = OnDiskTrie(fwd_db_path, new=True if overwrite or not os.path.exists(fwd_db_path) else False)
-    rev = OnDiskTrie(rev_db_path, new=True if overwrite or not os.path.exists(rev_db_path) else False)
+def _iter_wordlist_words(wordlist_path, min_glen=None, max_glen=None):
+    """Yield words (optionally filtered by grapheme length) from word-index.tsv."""
+    for w, fr, gl in _parse_word_index_rows(wordlist_path):
+        if min_glen is not None and gl < min_glen:
+            continue
+        if max_glen is not None and gl > max_glen:
+            continue
+        yield w
 
-    # If not overwriting but files exist, we still want a clean store:
-    if not overwrite and (os.path.exists(fwd_db_path) or os.path.exists(rev_db_path)):
-        # Re-create fresh
-        fwd = OnDiskTrie(fwd_db_path, new=True)
-        rev = OnDiskTrie(rev_db_path, new=True)
+def _populate_tries(fwd, rev, wordlist_path, pbar: bool, min_glen=None, max_glen=None, sort_by_word=False):
+    it = _iter_wordlist_words(wordlist_path, min_glen=min_glen, max_glen=max_glen)
+    # Optional pre-sort to improve prefix locality (uses memory)
+    if sort_by_word:
+        try:
+            it = sorted(it)
+        except Exception:
+            pass
+    if pbar:
+        try:
+            from tqdm import tqdm
+            it = tqdm(it, desc="Building tries", unit="w")
+        except Exception:
+            pass
+    for w in it:
+        lt = _letters(w)
+        if not lt:
+            continue
+        fwd.add(lt)
+        rev.add(list(reversed(lt)))
 
-    # Populate from word-index
-    with open(wordlist_path, "r", encoding="utf-8") as f:
-        hdr = f.readline().strip().split("\t")
-        idx = {h: i for i, h in enumerate(hdr)}
-        for ln in f:
-            if not ln.strip():
-                continue
-            c = ln.rstrip("\n").split("\t")
-            try:
-                w = c[idx["word"]]
-            except Exception:
-                continue
-            lt = _letters(w)
-            if not lt:
-                continue
-            # forward
-            fwd.add(lt)
-            # reverse
-            rev.add(list(reversed(lt)))
-    fwd.close(); rev.close()
+def build_tries(wordlist_path: str, fwd_db_path: str, rev_db_path: str,
+                overwrite: bool = False, pbar: bool = False,
+                min_glen=None, max_glen=None, sort_by_word=False):
+    fwd, rev = _open_or_reset_tries(fwd_db_path, rev_db_path, overwrite)
+    try:
+        _populate_tries(fwd, rev, wordlist_path, pbar=pbar,
+                        min_glen=min_glen, max_glen=max_glen,
+                        sort_by_word=sort_by_word)
+    finally:
+        fwd.close(); rev.close()
 
 def main():
     ap = argparse.ArgumentParser(description="Trie-backed word indexer")
+    ap.add_argument("--profile", default="default", help="Profile name")
+    ap.add_argument("--base_dir", default=None, help="Optional base directory for profile")
     ap.add_argument("--build", action="store_true", help="Build tries from word-index.tsv")
-    ap.add_argument("--wordlist", required=True, help="Path to word-index.tsv")
-    ap.add_argument("--fwd", required=True, help="Path to forward trie db file")
-    ap.add_argument("--rev", required=True, help="Path to reverse trie db file")
+    ap.add_argument("--wordlist", default=None, help="Path to word-index.tsv (default: profile.wordlist_path)")
+    ap.add_argument("--fwd", default=None, help="Path to forward trie db file (default: <profile-dir>/fwd.trie)")
+    ap.add_argument("--rev", default=None, help="Path to reverse trie db file (default: <profile-dir>/rev.trie)")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing trie files when building")
     ap.add_argument("--query_prefix", default="", help="Test query: prefix")
     ap.add_argument("--query_suffix", default="", help="Test query: suffix")
     ap.add_argument("--min_len", type=int, default=1)
     ap.add_argument("--max_len", type=int, default=None)
     ap.add_argument("--limit", type=int, default=50)
+    ap.add_argument("--pbar", action="store_true", help="Show progress bar while building")
+    ap.add_argument("--min_glen", type=int, default=None, help="Only add words with grapheme length >= this")
+    ap.add_argument("--max_glen", type=int, default=None, help="Only add words with grapheme length <= this")
+    ap.add_argument("--sort_by_word", action="store_true", help="Pre-sort words lexicographically before building (uses memory)")
     args = ap.parse_args()
+    prof = Profile(name=args.profile, base_dir=args.base_dir)
+    wl = args.wordlist or prof.wordlist_path
+    base_dir = os.path.dirname(wl)
+    fwd_path = args.fwd or os.path.join(base_dir, "fwd.trie")
+    rev_path = args.rev or os.path.join(base_dir, "rev.trie")
 
     if args.build:
-        build_tries(args.wordlist, args.fwd, args.rev, overwrite=args.overwrite)
-        print("Built tries:", args.fwd, args.rev)
+        os.makedirs(os.path.dirname(fwd_path), exist_ok=True)
+        os.makedirs(os.path.dirname(rev_path), exist_ok=True)
+        build_tries(wl, fwd_path, rev_path, overwrite=args.overwrite, pbar=args.pbar)
+        print(f"Built tries: fwd={fwd_path} rev={rev_path} (wordlist={wl})")
         return
 
-    idx = TrieWordIndex(args.wordlist, args.fwd, args.rev)
+    print(f"Using wordlist={wl}")
+    print(f"Using fwd_trie={fwd_path}")
+    print(f"Using rev_trie={rev_path}")
+    idx = TrieWordIndex(wl, fwd_path, rev_path)
     try:
         rows = idx.query_words(prefix=args.query_prefix, suffix=args.query_suffix,
                                min_len=args.min_len, max_len=args.max_len, limit=args.limit)
