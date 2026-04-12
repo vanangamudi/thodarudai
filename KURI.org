@@ -1,0 +1,84 @@
+* TODO List
+** TODO move =tamil_editor_demo.py= and =tamilphonetic/= into a separate repo
+** TODO move phonetic transliteration module into a separate project?
+
+* Braindump
+those are some of the words and I want to build a tool to semi manually split them into smaller words. I am doing this so that tokenizing Tamil text into words is correct and quick without relying on statistical methods like BPE. By semi-manually I mean I want to look at words that are related in some way say share a common prefix or suffix. I am thinking to split the longer words into smaller and move onto less longer words. by building this map, i can recursively split the words by looking up this map. Tamil is an agglutinative language and so there is no limit in length of the word that can be built by combining words. Combining words has specific rules, களிமண் + அடுப்பு -> களிமண் + ண் + அடுப்பு -> களிமண்ணடுப்பு, which is typical case ண் magically appears if the first word ண் follows single letter ம (மண்) combined with vowel அ in அடுப்பு. there are several rules like this. but first we need figure out மண் is the word that is being combined with அடுப்பு not களிமண். tokenizing like this vital for any NLP process for Tamil. Now that is the problem. My approach to build this tokenization map is to look at words from a large corpus of tamil text and extract common prefix and suffixes without losing tamil native structure. It is impossible to look at the whole corpus at one shot, so I want o query this corpus in batches comprised of similar structured words and manipulate them - split them, edit the splits if the pieces are not whole tamil words, and commit to them. there are other problems too. இளஞ்சிவப்பு < இளமை + சிவப்பு  < (இள + ஞ்சிவப்பு) or (இளஞ் + சிவப்பு). I am not a grammarian, and I am not sure which split is gramattically correct and so want to keep all the possible splits and let the grammarians to act on it later possibly via better frontend than emacs.
+
+
+lets not get to trie immediately and focus on the worflow design. I want to keep track of the manipulations I make be version controlled. I want to use emacs as the editor ui to make changes to the query batch. lets think about the query system - prefix - suffix over the corpus and edit the batch with the help of emacs and commit them. I want to focus on editing the longest words first and them move on to shorter words because the longer words might contain the shorter words as part of them and I want to avoid redundant work.
+
+I do not want to make use of a database, I want the emacs fronted to support interactive query editing before settling on a batch and the result will be a plain emacs buffer such that all editing functions are available like regex replace and multiple cursors available. the queries will be handled by python but the results will be editable via emacs. same words can be part of different batches, because each batch might contain insights which will give rise to different splits.
+
+avoid jsonl and json unless absolutely necessary. prefer plaintext file like tsv or custom format even. can the python side be run as a server to avoid loading the file for every query?
+
+
+
+* After conversing with LLM
+- Goal: Semi-manual tokenization for Tamil (agglutinative) by splitting long words into meaningful smaller words, preserving multiple possible splits for later expert review.
+- Workflow needs:
+  - Explore corpus by related forms (shared prefixes/suffixes).
+  - Focus on longest words first to avoid redundant work.
+  - Interactive editing in Emacs with full power (regex replace, multiple cursors, etc.).
+  - Version control all manipulations/decisions.
+  - No reliance on statistical methods initially; rules and insights drive splits.
+  - Same word can appear in multiple batches to reflect evolving insights.
+- Technical constraints:
+  - No database.
+  - Prefer plain text (TSV/custom), avoid JSON/JSONL unless unavoidable.
+  - Keep data loading efficient: run a long-lived process so we don’t reload on every query.
+  - Use local sockets instead of HTTP.
+
+Design we agreed on
+- Plain-text artifacts (TSV):
+  - data/wordlist.tsv (not necessarily versioned)
+    - Columns: word, freq, glen (grapheme length, precomputed).
+  - batches/*.tsv (versioned; fully editable in Emacs)
+    - Columns: word, freq, glen, splits, status, notes.
+    - splits: plus-separated parts with optional alternatives separated by “ || ” (e.g., இள+ஞ்+சிவப்பு || இளஞ்+சிவப்பு).
+    - Escaping: \+ \| \\ (and keep single-line cells).
+    - status: todo | accepted | ambiguous | rejected | draft.
+  - ledger/splits-ledger.tsv (append-only, versioned)
+    - Columns: timestamp, batch, word, status, splits, notes.
+    - Duplicates allowed (same word can appear multiple times across batches).
+
+- Long-lived local server (Unix domain socket; no HTTP):
+  - Socket: run/tamil_words.sock (UTF-8).
+  - Loads wordlist.tsv once; builds in-memory indices:
+    - by_len: sorted by glen DESC, then freq DESC, then word ASC.
+    - lex: sorted by word ASC (fast prefix range).
+    - rev_lex: sorted by reversed(word) ASC (fast suffix range).
+  - Loads ledger to maintain accepted_words set (latest status=accepted by file order).
+  - Single-threaded (can add file locks for ledger writes if needed).
+
+- Simple line-based socket protocol:
+  - QUERY prefix=… suffix=… min_len=… limit=… offset=… exclude_accepted=0|1 regex=…
+    - Returns TSV body with header: word, freq, glen, splits, status, notes.
+    - Order: glen DESC, freq DESC, word ASC.
+  - COMMIT batch=… rows=N
+    - Followed by N-lines TSV (same header). Appends to ledger; updates in-memory accepted set.
+  - RELOAD what=ledger|wordlist|both
+    - Reloads files and rebuilds in-memory state.
+  - STATS
+    - Returns counts and mtimes.
+
+- Emacs usage (plain TSV buffers):
+  - Run QUERY to open a TSV buffer; edit freely (regex, multiple cursors, etc.).
+  - Save buffer to batches/*.tsv for VCS.
+  - Run COMMIT from the buffer to append edits to ledger.
+  - Defaults focus on longest-first; exclude_accepted enabled to reduce redundancy.
+
+- Redundancy control and ordering:
+  - Default queries sort longest-first; set high min_len and exclude accepted words by default.
+  - Duplicates across batches are permitted; ledger is append-only.
+
+- Safeguards and validation:
+  - Validate TSV headers and status values on COMMIT.
+  - Create directories as needed (run/, ledger/).
+  - Optionally lock ledger file during append if multiple clients appear.
+  - Error responses are explicit (ERR …) without crashing the server.
+
+- Future extensions (optional):
+  - exclude_parts: skip words that already appear as parts in accepted splits.
+  - group_by_affix in TSV output to cluster related forms.
+  - Add top-of-buffer comment block explaining query parameters (as TSV comments starting with #).

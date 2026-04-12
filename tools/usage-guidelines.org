@@ -1,0 +1,11 @@
+* How to use the tool?
+- explore the
+-
+* =function_legnths.py=
+** Usage examples
+- Report the longest functions in the GUI file:
+  - ~python -m tools.function_lengths tools/gui_qt_app.py --top 25~
+- Show only functions ≥ 50 lines, grouped by file:
+  - ~python -m tools.function_lengths . --min 50 --by-file~
+- JSON output for scripting:
+  - ~python -m tools.function_lengths tools/gui_qt_app.py --json --min 30~

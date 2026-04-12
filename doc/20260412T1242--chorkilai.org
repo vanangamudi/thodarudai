@@ -1,0 +1,208 @@
+* chorkilai module: introduction and guide
+
+This module provides a compact, Tamil-friendly Trie implementation with two backends:
+- =Trie=: an in-memory trie for fast experiments and small data
+- =OnDiskTrie=: an mmap-backed trie for very large data that does not fit in RAM
+
+It also includes a tiny file I/O helper (=utils.openfile=) and a simple CLI to build or query tries.
+
+Locations:
+- Code: =lib/chorkilai/mlm/chorkilai/=
+  - =trie.py=: in-memory and on-disk trie implementations and a CLI
+  - =trie_disk_store.py=: low-level mmap store used by =OnDiskTrie=
+  - =utils.py=: small helpers like =openfile()=
+
+What you can do with it:
+- Build an on-disk trie from large lists of Tamil words (10M+)
+- Query exact membership (lookup) and list words by Tamil prefix
+- Use it programmatically in your Python tools (e.g., a word indexer)
+
+The on-disk format uses fixed-size node records and 64-bit child pointers, so very large tries are supported.
+
+** Quick start
+
+- Build an mmap-backed trie from one or more input files (one word per line):
+  - ~python -m lib.chorkilai.mlm.chorkilai.trie --build --mmap --mmap-flush --db-path data/tamil_trie.db --pbar words1.txt words2.txt~
+
+- Query an existing mmap trie: exact lookup or list words by prefix:
+  - Exact lookup:
+    - ~python -m lib.chorkilai.mlm.chorkilai.trie --query --mmap --db-path data/tamil_trie.db --lookup "செந்தாமரை"~
+    - Prints 1 if present, 0 otherwise.
+  - Prefix listing:
+    - ~python -m lib.chorkilai.mlm.chorkilai.trie --query --mmap --db-path data/tamil_trie.db --prefix "செ" --limit 50~
+
+- In-memory quick test (loads words from files on the fly; not saved):
+  - ~python -m lib.chorkilai.mlm.chorkilai.trie --query words.txt --lookup "கொள்"~
+  - ~python -m lib.chorkilai.mlm.chorkilai.trie --query words.txt --prefix "கொ" --limit 20~
+
+Notes:
+- =--mmap= switches to the on-disk backend.
+- =--mmap-flush= recreates the file when building; omit it to append in place (via scripts like =tools/trie_word_indexer.py=).
+- =--pbar= shows progress bars while loading.
+
+** Components and API
+
+- =BaseTrie= (abstract)
+  - Methods to implement:
+    - =add(item)=: insert a sequence (letters)
+    - =lookup(word)=: return True if the complete word is present
+    - =prefix_exists_p(prefix)=: return True if the prefix exists
+  - =close()=: optional cleanup (no-op for in-memory; closes mmap for on-disk)
+
+- =Trie= (in-memory)
+  - Structure
+    - =self.root=: =Node= object
+    - =Node= has =value= (letter), =count=, =children= dict, =is_complete= flag, =level=
+  - Methods
+    - =add(item)=: insert a sequence of letters
+    - =lookup(word)=: True if word terminal node is marked complete
+    - =prefix_exists_p(prefix)=: prefix traversal without requiring terminal
+    - =get_all_suffixes(prefix)=: return all suffix strings under the node that matches =prefix=
+  - Usage example (programmatic):
+    - ~t = Trie(); t.add(list("கொள்")); t.lookup(list("கொள்"))~
+
+- =OnDiskTrie= (mmap-backed)
+  - Purpose: scale to tens or hundreds of millions of words without keeping everything in RAM.
+  - Construction:
+    - =OnDiskTrie(db_path, new=False)=
+      - When =new=True=, initializes a fresh file and root node; otherwise loads header and root offset.
+  - Core methods
+    - =add(item)=: insert a sequence of letters on disk (expands node capacity as needed)
+    - =lookup(word)=: exact match
+    - =prefix_exists_p(prefix)=: prefix traversal
+    - =find_prefix(prefix, default=None)=: low-level traversal returning the node dict for =prefix= (or =default=)
+    - =get_all_suffixes(prefix)=: collect all suffixes from the node found by =find_prefix=
+    - =close()=: flush and close the mmap store
+  - Node expansion: when a node reaches its capacity, it is expanded and re-written; parent pointers are updated automatically.
+
+- Low-level store: =TrieDiskStore=
+  - Handles an mmap file that contains:
+    - File header at offset 0 with format =HEADER_FORMAT = "<4sIQQ"=:
+      - Magic "TRIE" (4 bytes)
+      - Version (uint32)
+      - Free-list head (uint64; reserved)
+      - Root node offset (uint64)
+    - Node records appended or overwritten in place
+  - =allocate_node(node_data)=: appends a new record; returns offset
+  - =read_node(offset)=: reads the record length then the full record
+  - =write_node(offset, node_data)=: in-place overwrite if size fits; otherwise appends and returns new offset
+  - Per-write flushing:
+    - Constructor default is =flush_per_write=True= (flush each write). When building very large tries, you can turn this off via an external script to improve throughput (see tools below).
+
+** On-disk node layout (fixed-size)
+
+- Header (9 bytes) per node:
+  - =record_length= (4 bytes, little-endian uint32)
+  - =is_terminal= (1 byte, 0 or 1)
+  - =child_count= (2 bytes, little-endian uint16)
+  - =capacity= (2 bytes, little-endian uint16)
+- Children array: exactly =capacity= slots, each child record has:
+  - =key_len= (1 byte)
+  - =key= (8 bytes; UTF-8 bytes truncated or NUL-padded to size)
+  - =child_ptr= (8 bytes, little-endian uint64)
+- Keys
+  - The design stores each child edge label in a single fixed 8-byte area. For Tamil, the intended usage is to store one letter token per edge (e.g., arichuvadi-coded graphemes), not arbitrary long strings.
+
+Implications:
+- 64-bit =child_ptr= allows files > 4 GiB.
+- Node growth doubles =capacity= when full, then re-serializes the record.
+
+** CLI in =trie.py=
+
+- Build mode (in-memory or mmap):
+  - =--build= chooses build mode.
+  - For mmap:
+    - ~python -m lib.chorkilai.mlm.chorkilai.trie --build --mmap --mmap-flush --db-path data/tamil_trie.db --pbar words.txt~
+  - For in-memory:
+    - ~python -m lib.chorkilai.mlm.chorkilai.trie --build words.txt~
+
+- Query mode (in-memory or mmap):
+  - =--query= chooses query mode.
+  - Options:
+    - =--lookup "<word>"= prints 1 or 0
+    - =--prefix "<prefix>"= prints words starting with prefix (up to =--limit=)
+  - Examples:
+    - ~python -m lib.chorkilai.mlm.chorkilai.trie --query --mmap --db-path data/tamil_trie.db --lookup "கொள்"~
+    - ~python -m lib.chorkilai.mlm.chorkilai.trie --query --mmap --db-path data/tamil_trie.db --prefix "செ" --limit 100~
+
+** Integration with tools
+
+- tools/trie_word_indexer.py:
+  - A higher-level indexer that builds two tries:
+    - forward trie over Tamil letter tokens (for prefix queries),
+    - reverse trie over reversed token sequences (for suffix queries).
+  - Supports:
+    - Incremental builds (omit =--overwrite=),
+    - Length-filtered passes (=--min_glen=, =--max_glen=),
+    - Optional pre-sort (=--sort_by_word=) for better locality,
+    - Parallel build of forward and reverse tries (=--parallel=),
+    - Disabling per-write flush on the store during build for speed.
+  - Example incremental passes:
+    - Short words first:
+      - ~python -m tools.trie_word_indexer --build --profile default --base_dir <dir> --overwrite --max_glen 4 --pbar~
+    - Then 5–8:
+      - ~python -m tools.trie_word_indexer --build --profile default --base_dir <dir> --min_glen 5 --max_glen 8 --pbar~
+    - Then 9+:
+      - ~python -m tools.trie_word_indexer --build --profile default --base_dir <dir> --min_glen 9 --pbar~
+
+** Performance tips
+
+- For huge builds (millions of words):
+  - Prefer mmap backend (use =--mmap=) and build once. Rebuild with =--mmap-flush= when changing the pointer size or format.
+  - Use the =tools/trie_word_indexer.py= builder for:
+    - disabling per-write flush during build,
+    - larger initial node capacity (fewer expansions),
+    - optional lexicographic pre-sorting,
+    - forward/reverse parallelization (=--parallel=).
+- Build in length-bounded passes (short words first), then append longer words; this tends to cluster prefixes and reduce random writes.
+
+** Programmatic examples
+
+- Build mmap trie programmatically:
+  - ~from lib.chorkilai.mlm.chorkilai.trie import OnDiskTrie~
+  - ~t = OnDiskTrie("data/tamil_trie.db", new=True)~
+  - ~from arichuvadi import get_letters_coding as letters~
+  - ~t.add(letters("செ"))~
+  - ~t.add(letters("செந்தாமரை"))~
+  - ~t.close()~
+
+- Query mmap trie:
+  - ~t = OnDiskTrie("data/tamil_trie.db", new=False)~
+  - ~t.lookup(letters("செந்தாமரை"))  # True/False~
+  - ~t.get_all_suffixes(letters("செ"))  # list of suffix strings~
+  - ~t.close()~
+
+- In-memory quick test:
+  - ~from lib.chorkilai.mlm.chorkilai.trie import Trie~
+  - ~t = Trie(); t.add(list("abc")); t.lookup(list("abc"))~
+
+Note: For Tamil words, represent inputs as letter tokens consistent with your pipeline (e.g., =arichuvadi.get_letters_coding=).
+
+** Limitations and notes
+
+- Child edge keys are stored in 8 bytes per child record; keys longer than 8 bytes are truncated in storage. The intended usage is one grapheme per edge.
+- =find_prefix(prefix)= returns a node dict or =None=. Its public uses are through =get_all_suffixes(prefix)=.
+- The mmap store does not reuse space of expanded nodes yet (free-list reserved in header); large numbers of expansions will grow the file. The builder scripts mitigate this by using larger initial capacities and sorting.
+- The in-memory trie (=Trie=) is simple and adequate for small to midsize datasets; for large data use =OnDiskTrie=.
+
+** Troubleshooting
+
+- Error "I format requires 0 <= number <= 4294967295":
+  - Cause: child pointers serialized with 32-bit integers overflow on large tries.
+  - Fix: this code uses 64-bit =<Q= for child pointers; rebuild the trie file with the current code (flush/overwrite).
+
+- Empty prefix query output:
+  - Ensure your input queries are tokenized the same way as during build (e.g., arichuvadi graphemes) if you are calling =OnDiskTrie.find_prefix= directly. The CLI handles encoding for you.
+
+- Slow builds:
+  - Use the indexer script with =--parallel --sort_by_word --pbar= and build in length-bounded passes; make sure per-write flush is disabled during the build (the indexer does this automatically).
+
+** File formats
+
+- Mmap trie file header (offset 0; 24 bytes):
+  - Magic "TRIE" (4), Version (4), Free-list head (8), Root node offset (8).
+
+- Node record:
+  - 9-byte header (record_length, is_terminal, child_count, capacity), followed by =capacity= child records (key_len, key[8], child_ptr[8]).
+
+These details are provided for understanding and tooling interoperability; you do not need to manipulate bytes directly when using the public API.
