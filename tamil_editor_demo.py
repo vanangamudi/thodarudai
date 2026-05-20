@@ -20,9 +20,65 @@ class PhoneticTextEdit(QTextEdit):
         # Remove the auto-translation on textChanged.
         # self.textChanged.connect(self.on_text_changed)
         self.setPlaceholderText("Type in romanized text and see Tamil transliteration...")
-        # Add buffers to track state:
+        # Buffers to track state:
         self.committed = ""
         self.composition = ""
+        self.trailing = ""
+
+    def _normalize_state_for_editing(self, current_text, cp):
+        # If there is a selection, use that to split the text.
+        if self.textCursor().hasSelection():
+            sel_start = self.textCursor().selectionStart()
+            sel_end = self.textCursor().selectionEnd()
+            self.committed = current_text[:sel_start]
+            self.trailing = current_text[sel_end:]
+            self.composition = ""
+            return
+        # Otherwise, check if the caret is at the expected position.
+        expected_cp = len(self.committed + self.composition)
+        if cp == expected_cp and current_text.startswith(self.committed + self.composition):
+            return
+        # If caret is not at the end, split the text at the caret.
+        if cp < len(current_text):
+            self.committed = current_text[:cp]
+            self.trailing = current_text[cp:]
+            self.composition = ""
+        else:
+            self.committed = current_text
+            self.trailing = ""
+            
+    def _handle_backspace(self):
+        if self.composition:
+            self.composition = self.composition[:-1]
+        else:
+            # Remove one character from the committed text.
+            self.committed = self.committed[:-1]
+        self.update_display()
+        
+    def _handle_delete(self):
+        if self.composition:
+            self.composition = ""
+        elif self.trailing:
+            # Remove the first character from trailing.
+            self.trailing = self.trailing[1:]
+        self.update_display()
+        
+    def _handle_boundary_char(self, ch):
+        self.commit_composition()
+        self.committed += ch
+        self.update_display()
+        
+    def _handle_alnum_char(self, ch):
+        candidate = self.composition + ch
+        if self.is_possible_prefix(candidate):
+            self.composition = candidate
+        else:
+            self.commit_composition()
+            if self.is_possible_prefix(ch):
+                self.composition = ch
+            else:
+                self.committed += ch
+        self.update_display()
 
     def commit_composition(self):
         """
@@ -39,20 +95,18 @@ class PhoneticTextEdit(QTextEdit):
             self.composition = ""
 
     def update_display(self):
-        """
-        Update the display by combining committed text with the transliteration
-        of the pending composition.
-        """
+        # Compute transliteration for current pending composition.
         current_disp = transliterate(self.composition)
         from tools.tamil_phonetic import PHONETIC_VOWELS, PULLI
         if self.composition and not any(self.composition.lower().endswith(vt) for vt in PHONETIC_VOWELS.keys()):
             if not current_disp.endswith(PULLI):
                 current_disp += PULLI
-        final = self.committed + current_disp
+        final = self.committed + current_disp + self.trailing
         self.blockSignals(True)
         self.setPlainText(final)
+        # Set the cursor at the end of the committed+composition part.
         cursor = self.textCursor()
-        cursor.setPosition(len(final))
+        cursor.setPosition(len(self.committed + current_disp))
         self.setTextCursor(cursor)
         self.blockSignals(False)
 
@@ -87,8 +141,8 @@ class PhoneticTextEdit(QTextEdit):
         from PyQt5.QtCore import Qt
         key = event.key()
         ch = event.text()
-        current_text = self.text()
-        cp = self.cursorPosition()
+        current_text = self.toPlainText()
+        cp = self.textCursor().position()
         # Normalize buffers for caret/selection position
         self._normalize_state_for_editing(current_text, cp)
 

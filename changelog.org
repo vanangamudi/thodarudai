@@ -1,0 +1,75 @@
+* 2026-05-20 Web UI parity with Qt app; logging, theming, shortcuts, and storage paths
+
+- Backend (FastAPI, webui1/app.py)
+  - Added FastAPI app with CORS for localhost:3000 and 5173.
+  - Initialized WordIndex and CuratedIndex on startup; logged build_tag and app mtime.
+  - Added request logging middleware with timing and error logging.
+  - Implemented /api/query:
+    - Supports prefix/suffix/regex, length_spec, limit.
+    - Added negative filters: prefix_not, suffix_not, regex_not.
+    - Added curated_ratio mixing between curated and new results.
+    - Trimmed all inputs to avoid trailing-space mismatches.
+    - Returns HTML table for Accept: text/html or JSON (results, elapsed_ms).
+  - Implemented /api/commit:
+    - Accepts edited_rows and optional batch.
+    - Writes batch TSV under data/batches and appends to data/splits-ledger.tsv.
+    - Logs absolute batch and ledger paths; returns them in JSON.
+  - Implemented /api/summary for counts and length distribution.
+  - Implemented reminders:
+    - GET /api/reminders (words), POST /api/reminders (add/remove), GET /api/reminders/results.
+    - Reminders file at data/reminders.tsv with fcntl locking.
+  - Implemented /api/generate_batch_name to standardize batch filenames.
+  - Implemented /api/health (status, build_tag, app path+mtime, word/curated counts).
+  - Mounted /static only if directory exists.
+  - __main__ runs uvicorn with reload=False for stable CLI run.
+
+- Frontend (Vite + React, webui1/frontend)
+  - Bootstrapped Vite project:
+    - package.json, vite.config.js, index.html, src/main.jsx, src/App.jsx.
+  - Implemented QueryForm.jsx:
+    - Query parameters: prefix/suffix/regex, negative filters, length_spec, limit, curated_ratio.
+    - Editable results table with splits and notes; row change highlighting vs baseline.
+    - Selection model with "Only selected rows"; Select All / Clear Selection.
+    - Find & Replace panel operating on Splits column; selection-aware; change count feedback.
+    - Commit flow posts only changed rows; requests default batch name; displays result.
+    - Summary loader displays backend stats and length distribution.
+    - Keyboard shortcuts:
+      - Ctrl+S Commit
+      - Alt+Q Query
+      - Alt+P/S/R Focus Prefix/Suffix/Regex
+      - Alt+F/G Focus Find/Replace
+      - Alt+L/I Focus Length/Limit
+      - Alt+E Apply Replace
+      - Alt+A/C Select All / Clear Selection
+      - Alt+B Show reminder bag; Alt+M Toggle reminders for selection
+    - Diagnostics and stability:
+      - Axios interceptors with single-install guard for request/response logging.
+      - Global unhandledrejection/error logging.
+      - UI build tag and backend health footer (build_tag, file mtime, counts).
+  - Theming (src/theme.css):
+    - Light/dark theme variables; card panels; grids; toolbars.
+    - High-contrast buttons (neutral/primary/accent) in light and dark modes.
+    - Stacked panels (Filters, Options, Find & Replace) one below another.
+    - Changed-row highlight color; sticky table headers.
+
+- Data and paths
+  - WORDLIST_PATH: data/word-index.tsv (input).
+  - BATCHES_DIR: data/batches (created as needed).
+  - LEDGER_PATH: data/splits-ledger.tsv (append with locking).
+  - REMINDERS_PATH: data/reminders.tsv (rewrite with locking).
+  - /api/commit returns absolute batch_path and ledger_path.
+
+- Fixes and stability improvements
+  - Trimmed inputs server- and client-side to avoid zero-result queries due to trailing spaces.
+  - Resolved JSX structure issues; ensured all tags close correctly.
+  - Imported missing React hooks; prevented duplicate axios interceptors under HMR.
+  - Improved visibility and contrast of neutral buttons across themes.
+
+- How to run
+  - Backend:
+    - python webui1/app.py
+    - or: uvicorn webui1.app:app --host 127.0.0.1 --port 8000 --reload
+  - Frontend:
+    - cd webui1/frontend
+    - npm install
+    - npm run dev

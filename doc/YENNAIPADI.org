@@ -73,6 +73,7 @@ The GUI focuses on fast search (by prefix/suffix/regex), bulk-editing, and workf
   └── VAZHU.org
 
 #+end_src
+
 ** Core ideas
 
 - =word-index.tsv= is your searchable corpus index with columns: =word  freq  glen=.
@@ -93,11 +94,27 @@ The GUI focuses on fast search (by prefix/suffix/regex), bulk-editing, and workf
 
 1) Choose a profile and base directory (e.g., ~--profile default --base_dir ~/thodar-data~). All runtime files live under =<base_dir>/<profile>/=.
 
-2) Build the searchable word index (if you don’t already have one):
-   - ~python -m tools.build_word_index input1.tsv input2.tsv > <base_dir>/<profile>/word-index.tsv~
+2) Build the searchable word index using the updated interface.
+   This tool now supports robust argument parsing with options for output file, profile, and base_dir.
+   For example, to combine two input TSV files and write the output to the default profile word-index:
 
-3) (Optional) Build mmap-backed tries for fast prefix/suffix search:
+   - ~python -m tools.build_word_index input1.tsv input2.tsv --profile default --base_dir <dir>~
+
+   Or to direct the output to a file:
+
+   - ~python -m tools.build_word_index input1.tsv input2.tsv --out my_index.tsv --profile myProfile --base_dir <dir>~
+
+3) (Optional) Build mmap-backed tries for fast prefix/suffix search.
+   The trie indexer now uses a dedicated argument parser. In addition to the profile and base_dir options,
+   you can specify the wordlist, forward and reverse trie paths, and control build options.
+
+   For example, to build tries with progress bars and overwrite any existing trie files:
+
    - ~python -m tools.trie_word_indexer --profile default --base_dir <dir> --build --overwrite --pbar~
+
+   If you need to override the default paths, you can specify:
+
+   - ~python -m tools.trie_word_indexer --profile default --base_dir <dir> --build --fwd myFwd.trie --rev myRev.trie --overwrite --pbar~
 
 ** Launch the GUI
 
@@ -106,6 +123,10 @@ The GUI focuses on fast search (by prefix/suffix/regex), bulk-editing, and workf
 - Trie indexer:
   - ~python -m tools.gui_qt_app --profile default --base_dir <dir> --indexer trie~
   - By default it looks for =fwd.trie= and =rev.trie= alongside =word-index.tsv=. Override with ~--fwd_trie~ and ~--rev_trie~ if needed.
+
+Note: All tools (build, trie indexer, and GUI) now share a common argument-parsing interface with the options --profile and --base_dir.
+
+Note: All tools (build, trie indexer, and GUI) now use a common argument-parsing interface with --profile and --base_dir.
 
 You can open multiple windows. The tool shares one loaded index per process (so additional windows are lightweight).
 

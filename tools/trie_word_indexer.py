@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+Trie Word Indexer Tool
+
 Trie-backed word indexer using chorkilai's mmap OnDiskTrie.
 Builds and queries forward and reverse tries for fast prefix/suffix lookup.
+
+This script provides a trie-backed word indexing system using a memory-mapped OnDiskTrie.
+It can either build tries (forward and reverse) from a word-index TSV file or query an existing trie-based index for candidate words based on specified prefix and/or suffix criteria. It supports optional parameters such as minimum/maximum grapheme length, progress bars, parallel building, and more. When building, it reads words from the wordlist (optionally applying grapheme length filters) and builds two tries: one for normal (forward) letter sequences and one for reversed sequences, to facilitate fast prefix and suffix lookup.
 """
+
 
 import os
 import re
@@ -14,6 +20,28 @@ from typing import List, Tuple, Dict, Iterable
 import arichuvadi as ari
 from chorkilai.trie import OnDiskTrie
 from concurrent.futures import ProcessPoolExecutor, as_completed
+
+def build_arg_parser():
+    import argparse
+    ap = argparse.ArgumentParser(description="Trie-backed word indexer using chorkilai's mmap OnDiskTrie. Builds and queries forward and reverse tries for fast prefix/suffix lookup.")
+    ap.add_argument("--profile", default="default", help="Profile name")
+    ap.add_argument("--base_dir", default=None, help="Optional base directory for profile")
+    ap.add_argument("--build", action="store_true", help="Build tries from word-index.tsv")
+    ap.add_argument("--wordlist", default=None, help="Path to word-index.tsv (default: profile.wordlist_path)")
+    ap.add_argument("--fwd", default=None, help="Path to forward trie db file (default: <profile-dir>/fwd.trie)")
+    ap.add_argument("--rev", default=None, help="Path to reverse trie db file (default: <profile-dir>/rev.trie)")
+    ap.add_argument("--parallel", action="store_true", help="Build forward and reverse tries in parallel")
+    ap.add_argument("--overwrite", action="store_true", help="Overwrite existing trie files when building")
+    ap.add_argument("--query_prefix", default="", help="Test query: prefix")
+    ap.add_argument("--query_suffix", default="", help="Test query: suffix")
+    ap.add_argument("--min_len", type=int, default=1)
+    ap.add_argument("--max_len", type=int, default=None)
+    ap.add_argument("--limit", type=int, default=50)
+    ap.add_argument("--pbar", action="store_true", help="Show progress bar while building")
+    ap.add_argument("--min_glen", type=int, default=None, help="Only add words with grapheme length >= this")
+    ap.add_argument("--max_glen", type=int, default=None, help="Only add words with grapheme length <= this")
+    ap.add_argument("--sort_by_word", action="store_true", help="Pre-sort words lexicographically before building (uses memory)")
+    return ap
 
 RankRec = Tuple[str, int, int]  # (word, freq, glen)
 
@@ -320,25 +348,12 @@ def build_tries(wordlist_path: str, fwd_db_path: str, rev_db_path: str,
             fwd.close(); rev.close()
 
 def main():
-    ap = argparse.ArgumentParser(description="Trie-backed word indexer")
-    ap.add_argument("--profile", default="default", help="Profile name")
-    ap.add_argument("--base_dir", default=None, help="Optional base directory for profile")
-    ap.add_argument("--build", action="store_true", help="Build tries from word-index.tsv")
-    ap.add_argument("--wordlist", default=None, help="Path to word-index.tsv (default: profile.wordlist_path)")
-    ap.add_argument("--fwd", default=None, help="Path to forward trie db file (default: <profile-dir>/fwd.trie)")
-    ap.add_argument("--rev", default=None, help="Path to reverse trie db file (default: <profile-dir>/rev.trie)")
-    ap.add_argument("--parallel", action="store_true", help="Build forward and reverse tries in parallel")
-    ap.add_argument("--overwrite", action="store_true", help="Overwrite existing trie files when building")
-    ap.add_argument("--query_prefix", default="", help="Test query: prefix")
-    ap.add_argument("--query_suffix", default="", help="Test query: suffix")
-    ap.add_argument("--min_len", type=int, default=1)
-    ap.add_argument("--max_len", type=int, default=None)
-    ap.add_argument("--limit", type=int, default=50)
-    ap.add_argument("--pbar", action="store_true", help="Show progress bar while building")
-    ap.add_argument("--min_glen", type=int, default=None, help="Only add words with grapheme length >= this")
-    ap.add_argument("--max_glen", type=int, default=None, help="Only add words with grapheme length <= this")
-    ap.add_argument("--sort_by_word", action="store_true", help="Pre-sort words lexicographically before building (uses memory)")
+    import os
+    # Create and parse arguments from our dedicated parser
+    ap = build_arg_parser()
     args = ap.parse_args()
+
+    from tools.profile import Profile
     prof = Profile(name=args.profile, base_dir=args.base_dir)
     wl = args.wordlist or prof.wordlist_path
     base_dir = os.path.dirname(wl)
