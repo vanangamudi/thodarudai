@@ -6,6 +6,8 @@ import os, time, logging, math, random
 import re
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("webui")
+STARTUP_TS = int(time.time())
+BUILD_TAG = time.strftime("%Y%m%dT%H%M%S", time.localtime(STARTUP_TS))
 from fastapi.concurrency import run_in_threadpool
 from tools.word_indexer import WordIndex
 from tools.curation_index import CuratedIndex
@@ -105,6 +107,8 @@ app.add_middleware(
 async def on_startup():
     await run_in_threadpool(initialize_services)
     logging.info("Startup complete – services initialized")
+    logger.info("Backend build_tag=%s app_file=%s mtime=%s",
+                BUILD_TAG, __file__, int(os.path.getmtime(__file__)))
 
 # Optional: mount a static directory if you need to serve assets, e.g. CSS/JS.
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -287,10 +291,16 @@ def commit_edits(batch: str = Form(None), edited_rows: str = Form(...)):
     try:
         rows = json.loads(edited_rows)
         batch_name = batch if batch else f"batch-{int(time.time())}.tsv"
-        logger.info("COMMIT start rows=%d batch=%s", len(rows), batch_name)
+        batch_dir = BATCHES_DIR
+        os.makedirs(batch_dir, exist_ok=True)
+        batch_path = os.path.abspath(os.path.join(batch_dir, batch_name))
+        logger.info("COMMIT start rows=%d batch=%s batch_path=%s", len(rows), batch_name, batch_path)
         tsv_lines = ["\t".join(["id", "word", "splits", "freq", "glen", "notes"])]
         for r in rows:
             tsv_lines.append("\t".join(r))
+        # Write batch TSV to disk
+        with open(batch_path, "w", encoding="utf-8") as bf:
+            bf.write("\n".join(tsv_lines) + "\n")
         os.makedirs(os.path.dirname(LEDGER_PATH), exist_ok=True)
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         with open(LEDGER_PATH, "a", encoding="utf-8") as lf:
@@ -307,8 +317,15 @@ def commit_edits(batch: str = Form(None), edited_rows: str = Form(...)):
                     lf.write(f"{ts}\t{batch_name}\t{rec_id or word}\t{word}\t{splits}\t{notes}\n")
             finally:
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-        logger.info("COMMIT done rows=%d batch=%s wrote_ledger=%s", len(rows), batch_name, LEDGER_PATH)
-        return {"status": "committed", "batch": batch_name, "rows": len(rows)}
+        ledger_abs = os.path.abspath(LEDGER_PATH)
+        logger.info("COMMIT done rows=%d batch=%s wrote_batch=%s wrote_ledger=%s", len(rows), batch_name, batch_path, ledger_abs)
+        return {
+            "status": "committed",
+            "batch": batch_name,
+            "batch_path": batch_path,
+            "ledger_path": ledger_abs,
+            "rows": len(rows),
+        }
     except Exception as e:
         logging.exception("Error in commit endpoint")
         raise HTTPException(status_code=500, detail=str(e))
@@ -404,6 +421,24 @@ def api_generate_batch_name(prefix: str = Form(""), suffix: str = Form(""), leng
         return {"batch": default_batch_name(prefix, suffix, length_spec)}
     except Exception as e:
         logging.exception("Error generating batch name")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/health")
+def health():
+    try:
+        return {
+            "status": "ok",
+            "build_tag": BUILD_TAG,
+            "app_file": __file__,
+            "app_mtime": int(os.path.getmtime(__file__)),
+            "wordlist_path": WORDLIST_PATH,
+            "word_count": len(WORD_INDEX.words) if WORD_INDEX else 0,
+            "curated_count": int(getattr(CURATED, "curated_count", 0) or 0),
+            "startup_ts": STARTUP_TS,
+            "now": int(time.time()),
+        }
+    except Exception as e:
+        logger.exception("Health check failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
