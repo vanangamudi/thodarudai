@@ -4,21 +4,24 @@ import './theme.css';
 axios.defaults.timeout = 20000; // 20s dev-timeout to surface hung requests
 
 // Log every axios request/response
-axios.interceptors.request.use(cfg => {
-  console.log("[axios][request]", cfg.method?.toUpperCase(), cfg.url, cfg.headers, cfg.data);
-  return cfg;
-});
-axios.interceptors.response.use(
-  resp => {
-    const len = Array.isArray(resp.data?.results) ? resp.data.results.length : undefined;
-    console.log("[axios][response]", resp.config?.url, resp.status, len !== undefined ? `results=${len}` : resp.data);
-    return resp;
-  },
-  err => {
-    console.error("[axios][error]", err.message, err.response?.status, err.response?.data);
-    return Promise.reject(err);
-  }
-);
+if (typeof window !== "undefined" && !window.__AXIOS_LOGGER_INSTALLED__) {
+  axios.interceptors.request.use(cfg => {
+    console.log("[axios][request]", cfg.method?.toUpperCase(), cfg.url, cfg.headers, cfg.data);
+    return cfg;
+  });
+  axios.interceptors.response.use(
+    resp => {
+      const len = Array.isArray(resp.data?.results) ? resp.data.results.length : undefined;
+      console.log("[axios][response]", resp.config?.url, resp.status, len !== undefined ? `results=${len}` : resp.data);
+      return resp;
+    },
+    err => {
+      console.error("[axios][error]", err.message, err.response?.status, err.response?.data);
+      return Promise.reject(err);
+    }
+  );
+  window.__AXIOS_LOGGER_INSTALLED__ = true;
+}
 
 // Catch unhandled promise rejections and window errors
 if (typeof window !== "undefined") {
@@ -48,6 +51,8 @@ const QueryForm = () => {
   const [findText, setFindText] = useState("");
   const [replaceText, setReplaceText] = useState("");
   const [summary, setSummary] = useState(null);
+  const UI_BUILD = useRef(new Date().toISOString()).current;
+  const [health, setHealth] = useState(null);
   const [onlySelected, setOnlySelected] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const prefixRef = useRef(null);
@@ -98,7 +103,7 @@ const QueryForm = () => {
     setLoading(false);
     console.log("[ui] submit done");
   };
-  
+
   const updateRowField = (index, field, value) => {
     setRows(prev => {
       const next = [...prev];
@@ -275,7 +280,20 @@ const QueryForm = () => {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [commitEdits, applyReplace, selectAll, clearSelection, toggleRemindersForSelected, showReminderBag]);
-  
+
+  useEffect(() => {
+    console.log("[ui] build", UI_BUILD);
+    (async () => {
+      try {
+        const r = await axios.get("http://127.0.0.1:8000/api/health");
+        setHealth(r.data);
+        console.log("[ui] backend health", r.data);
+      } catch (e) {
+        console.error("[ui] health failed", e);
+      }
+    })();
+  }, [UI_BUILD]);
+
   return (
     <div>
       <form onSubmit={handleSubmit}>
@@ -310,7 +328,7 @@ const QueryForm = () => {
             </div>
           </div>
         </div>
-    
+
         <div className="panel card">
             <div className="group">
               <div className="group-title">Options</div>
@@ -436,6 +454,14 @@ const QueryForm = () => {
           </table>
         </div>
       )}
+      <div className="panel card" style={{ padding: 8 }}>
+        <small>
+          UI {UI_BUILD}
+          {health ? (
+            <> | API {health.build_tag} | {health.app_file} mtime {new Date(health.app_mtime * 1000).toLocaleString()} | words {health.word_count} | curated {health.curated_count}</>
+          ) : " | API: …"}
+        </small>
+      </div>
     </div>
   );
 };
