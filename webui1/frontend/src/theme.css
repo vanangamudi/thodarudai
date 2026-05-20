@@ -52,6 +52,16 @@ label.inline {
     --warn: #f59e0b;
     --changed: #3a2f00;
   }
+  
+  /* Improve button contrast in dark mode */
+  .btn {
+    background: linear-gradient(to bottom, #4b5563, #374151); /* slate-600 -> slate-700 (lighter than card) */
+    color: #fff;
+    border-color: #111827; /* near-card edge for separation */
+    text-shadow: 0 1px 0 rgba(0,0,0,0.4);
+  }
+  .btn:hover { filter: brightness(1.1); }
+  .btn:active { filter: brightness(1.0); }
 }
 
 * { box-sizing: border-box; }
@@ -87,9 +97,9 @@ html, body, #root {
 
 form {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
+  flex-direction: column;   /* stack sections vertically */
+  gap: 12px;                /* space between panels */
+  align-items: stretch;     /* panels take full width */
 }
 
 input[type="text"],
@@ -123,28 +133,37 @@ label {
 
 .btn {
   appearance: none;
-  border: 1px solid var(--border);
-  background: linear-gradient(to bottom, #fafafa, #f1f5f9);
-  color: var(--text);
+  border: 1px solid #0f172a;              /* strong border for contrast */
+  background: linear-gradient(to bottom, #334155, #1f2937); /* slate-700 -> slate-800 */
+  color: #fff;                             /* white text for visibility */
+  text-shadow: 0 1px 0 rgba(0,0,0,0.35);   /* subtle lift on dark bg */
   border-radius: 8px;
   padding: 8px 12px;
+  min-height: 36px;                        /* clearer hit target */
   cursor: pointer;
-  transition: transform .02s ease-in-out, background .15s ease, border-color .15s ease;
+  font-weight: 700;                        /* stronger text */
+  letter-spacing: .015em;
+  transition: transform .02s ease-in-out, filter .15s ease, box-shadow .15s ease;
 }
-
-.btn:hover { transform: translateY(-1px); }
-.btn:active { transform: translateY(0); }
+.btn:hover { transform: translateY(-1px); filter: brightness(1.06); }
+.btn:active { transform: translateY(0); filter: none; }
+.btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 65%, transparent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent);
+}
 
 .btn-primary {
-  background: linear-gradient(to bottom, color-mix(in srgb, var(--primary) 92%, white), var(--primary));
-  color: white;
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--primary) 88%, white), var(--primary));
+  color: #fff;
   border-color: var(--primary-700);
+  text-shadow: 0 1px 0 rgba(0,0,0,0.25);
 }
-
 .btn-accent {
-  background: linear-gradient(to bottom, color-mix(in srgb, var(--accent) 92%, white), var(--accent));
-  color: white;
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--accent) 88%, white), var(--accent));
+  color: #fff;
   border-color: var(--accent-700);
+  text-shadow: 0 1px 0 rgba(0,0,0,0.25);
 }
 
 .table-wrap {
