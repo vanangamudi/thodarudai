@@ -1,37 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
-import axios from 'axios';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import './theme.css';
-axios.defaults.timeout = 20000; // 20s dev-timeout to surface hung requests
+import useGlobalShortcuts from './hooks/useGlobalShortcuts';
+import { queryWords, generateBatchName, commitBatch, getSummary, getHealth, getReminders, getReminderResults, updateReminders } from './api';
+import FiltersPanel from './components/FiltersPanel';
+import OptionsPanel from './components/OptionsPanel';
+import FindReplacePanel from './components/FindReplacePanel';
+import ResultsTable from './components/ResultsTable';
+import SummaryPanel from './components/SummaryPanel';
+import FooterInfo from './components/FooterInfo';
 
-// Log every axios request/response
-if (typeof window !== "undefined" && !window.__AXIOS_LOGGER_INSTALLED__) {
-  axios.interceptors.request.use(cfg => {
-    console.log("[axios][request]", cfg.method?.toUpperCase(), cfg.url, cfg.headers, cfg.data);
-    return cfg;
-  });
-  axios.interceptors.response.use(
-    resp => {
-      const len = Array.isArray(resp.data?.results) ? resp.data.results.length : undefined;
-      console.log("[axios][response]", resp.config?.url, resp.status, len !== undefined ? `results=${len}` : resp.data);
-      return resp;
-    },
-    err => {
-      console.error("[axios][error]", err.message, err.response?.status, err.response?.data);
-      return Promise.reject(err);
-    }
-  );
-  window.__AXIOS_LOGGER_INSTALLED__ = true;
-}
-
-// Catch unhandled promise rejections and window errors
-if (typeof window !== "undefined") {
-  window.addEventListener("unhandledrejection", (e) => {
-    console.error("[window][unhandledrejection]", e.reason);
-  });
-  window.addEventListener("error", (e) => {
-    console.error("[window][error]", e.message, e.error);
-  });
-}
 
 const QueryForm = () => {
   const [params, setParams] = useState({
@@ -63,45 +40,31 @@ const QueryForm = () => {
   const lengthRef = useRef(null);
   const limitRef = useRef(null);
   const queryBtnRef = useRef(null);
+  
+  const refs = useMemo(() => ({
+    prefixRef, suffixRef, regexRef, findRef, replaceRef, lengthRef, limitRef, queryBtnRef
+  }), [prefixRef, suffixRef, regexRef, findRef, replaceRef, lengthRef, limitRef, queryBtnRef]);
 
   const handleSubmit = async (e) => {
-    e.preventDefault();
+    if (e) e.preventDefault();
     setLoading(true);
-    console.log("[ui] submit query", params);
     try {
-      const clean = {
-        ...params,
-        prefix: (params.prefix || "").trim(),
-        suffix: (params.suffix || "").trim(),
-        regex: (params.regex || "").trim(),
-        prefix_not: (params.prefix_not || "").trim(),
-        suffix_not: (params.suffix_not || "").trim(),
-        regex_not: (params.regex_not || "").trim(),
-        length_spec: String(params.length_spec || "").trim() || "8-",
-      };
-      const formData = new URLSearchParams();
-      Object.entries(clean).forEach(([key, value]) => {
-        formData.append(key, value);
-      });
-      const response = await axios.post("http://127.0.0.1:8000/api/query", formData);
-      const res = response.data.results || [];
+      const res = await queryWords(params);
       const newRows = res.map((rec, idx) => ({
         id: String(idx + 1),
         word: rec[0],
         freq: rec[1],
         glen: rec[2],
         splits: rec[0],
-        notes: "",
+        notes: ''
       }));
-      console.log("[ui] query ok rows", newRows.length);
       setRows(newRows);
       setBaseline(newRows.map(r => r.splits));
       setSelected(new Set());
     } catch (err) {
-      console.error("[ui] query failed", err);
+      console.error('[ui] query failed', err);
     }
     setLoading(false);
-    console.log("[ui] submit done");
   };
 
   const updateRowField = (index, field, value) => {
@@ -148,320 +111,105 @@ const QueryForm = () => {
 
   const showReminderBag = async () => {
     try {
-      const r = await axios.get("http://127.0.0.1:8000/api/reminders/results");
-      const res = r.data?.results || [];
+      const res = await getReminderResults();
       const newRows = res.map((rec, idx) => ({
         id: String(idx + 1),
         word: rec[0],
         freq: rec[1],
         glen: rec[2],
         splits: rec[0],
-        notes: "",
+        notes: ''
       }));
       setRows(newRows);
       setBaseline(newRows.map(r => r.splits));
       setSelected(new Set());
-      console.log("[ui] reminders bag: rows", newRows.length);
-    } catch (e) {
-      console.error("[ui] reminders bag failed", e);
-      alert("Failed to load reminders: " + (e.response?.data?.detail || e.message));
-    }
+    } catch (e) { console.error('[ui] reminders bag failed', e); alert('Failed to load reminders.'); }
   };
 
   const toggleRemindersForSelected = async () => {
-    const selRows = rows.filter(r => selected.has(r.id));
-    if (selRows.length === 0) {
-      alert("No rows selected.");
-      return;
-    }
-    const words = selRows.map(r => r.word);
+    const words = rows.filter(r => selected.has(r.id)).map(r => r.word);
+    if (words.length === 0) { alert('No rows selected.'); return; }
     try {
-      const cur = await axios.get("http://127.0.0.1:8000/api/reminders");
-      const curSet = new Set(cur.data?.words || []);
-      const toAdd = words.filter(w => !curSet.has(w));
-      const toRemove = words.filter(w => curSet.has(w));
-      if (toAdd.length > 0) {
-        const fd = new URLSearchParams();
-        fd.append("action", "add");
-        fd.append("words_json", JSON.stringify(toAdd));
-        await axios.post("http://127.0.0.1:8000/api/reminders", fd);
-      }
-      if (toRemove.length > 0) {
-        const fd = new URLSearchParams();
-        fd.append("action", "remove");
-        fd.append("words_json", JSON.stringify(toRemove));
-        await axios.post("http://127.0.0.1:8000/api/reminders", fd);
-      }
-      console.log("[ui] reminders toggle ok add/remove", toAdd.length, toRemove.length);
-      alert(`Reminders updated: added ${toAdd.length}, removed ${toRemove.length}.`);
-    } catch (e) {
-      console.error("[ui] reminders toggle failed", e);
-      alert("Failed to update reminders: " + (e.response?.data?.detail || e.message));
-    }
+      const cur = new Set(await getReminders());
+      const add = words.filter(w => !cur.has(w));
+      const rem = words.filter(w => cur.has(w));
+      if (add.length) await updateReminders('add', add);
+      if (rem.length) await updateReminders('remove', rem);
+      alert(`Reminders updated: added ${add.length}, removed ${rem.length}.`);
+    } catch (e) { console.error('[ui] reminders toggle failed', e); alert('Failed to update reminders.'); }
   };
 
   const loadSummary = async () => {
-    console.log("[ui] load summary");
-    try {
-      const r = await axios.get("http://127.0.0.1:8000/api/summary");
-      setSummary(r.data);
-      console.log("[ui] summary ok");
-    } catch (e) {
-      console.error("[ui] summary failed", e);
-    }
+    try { setSummary(await getSummary()); } catch (e) { console.error('[ui] summary failed', e); }
   };
 
   const commitEdits = async () => {
-    console.log("[ui] commit start");
     try {
       const edited = rows
         .map((r, idx) => ({ r, idx }))
         .filter(({ r, idx }) => r.splits !== baseline[idx])
-        .map(({ r }) => [r.id, r.word, r.splits, String(r.freq ?? ""), String(r.glen ?? ""), r.notes ?? ""]);
-      if (edited.length === 0) {
-        alert("No edits to commit.");
-        return;
-      }
-      const bnForm = new URLSearchParams();
-      bnForm.append("prefix", params.prefix);
-      bnForm.append("suffix", params.suffix);
-      bnForm.append("length_spec", params.length_spec);
-      let batch = "";
-      try {
-        const bn = await axios.post("http://127.0.0.1:8000/api/generate_batch_name", bnForm);
-        batch = bn.data.batch || "";
-      } catch (_) {}
-
-      const fd = new URLSearchParams();
-      if (batch) fd.append("batch", batch);
-      fd.append("edited_rows", JSON.stringify(edited));
-      console.log("[ui] commit rows", edited.length, "batch?", !!batch);
-      const resp = await axios.post("http://127.0.0.1:8000/api/commit", fd);
-      alert(`Committed ${resp.data.rows} row(s)${batch ? ` in ${batch}` : ""}.`);
-      console.log("[ui] commit ok", resp.data);
+        .map(({ r }) => [r.id, r.word, r.splits, String(r.freq ?? ''), String(r.glen ?? ''), r.notes ?? '']);
+      if (edited.length === 0) { alert('No edits to commit.'); return; }
+      let batch = '';
+      try { batch = await generateBatchName(params); } catch (_) {}
+      const resp = await commitBatch(edited, batch);
+      alert(`Committed ${resp.rows} row(s)${batch ? ` in ${batch}` : ''}.`);
       setBaseline(rows.map(r => r.splits));
     } catch (e) {
-      console.error("[ui] commit failed", e);
-      alert("Commit failed: " + (e.response?.data?.detail || e.message));
+      console.error('[ui] commit failed', e);
+      alert('Commit failed: ' + (e.response?.data?.detail || e.message));
     }
   };
 
-  useEffect(() => {
-    const onKeyDown = (e) => {
-      const k = (e.key || "").toLowerCase();
-      // Ctrl+S: Commit
-      if (e.ctrlKey && !e.shiftKey && !e.altKey && k === 's') {
-        e.preventDefault(); e.stopPropagation();
-        commitEdits();
-        return;
-      }
-      // Alt+Q: Query (submit)
-      if (e.altKey && !e.ctrlKey && !e.shiftKey && k === 'q') {
-        e.preventDefault(); e.stopPropagation();
-        queryBtnRef.current?.click();
-        return;
-      }
-      // Focus fields (Alt+...)
-      if (e.altKey && !e.ctrlKey && !e.shiftKey) {
-        if (k === 'p') { e.preventDefault(); prefixRef.current?.focus(); return; }     // Prefix
-        if (k === 's') { e.preventDefault(); suffixRef.current?.focus(); return; }     // Suffix
-        if (k === 'r') { e.preventDefault(); regexRef.current?.focus(); return; }      // Regex
-        if (k === 'f') { e.preventDefault(); findRef.current?.focus(); return; }       // Find
-        if (k === 'g') { e.preventDefault(); replaceRef.current?.focus(); return; }    // Replace
-        if (k === 'l') { e.preventDefault(); lengthRef.current?.focus(); return; }     // Length
-        if (k === 'i') { e.preventDefault(); limitRef.current?.focus(); return; }      // Limit
-        if (k === 'e') { e.preventDefault(); applyReplace(); return; }                 // Apply replace
-        if (k === 'a') { e.preventDefault(); selectAll(); return; }                    // Select all rows
-        if (k === 'c') { e.preventDefault(); clearSelection(); return; }               // Clear selection
-        if (k === 'm') { e.preventDefault(); toggleRemindersForSelected(); return; }   // Toggle reminders for selection
-        if (k === 'b') { e.preventDefault(); showReminderBag(); return; }              // Show reminders results
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [commitEdits, applyReplace, selectAll, clearSelection, toggleRemindersForSelected, showReminderBag]);
+  useGlobalShortcuts({
+    onCommit: commitEdits,
+    onQuery: () => queryBtnRef.current?.click(),
+    onApplyReplace: applyReplace,
+    onSelectAll: () => setSelected(new Set(rows.map(r => r.id))),
+    onClearSelection: () => setSelected(new Set()),
+    onToggleReminders: toggleRemindersForSelected,
+    onShowReminders: showReminderBag,
+    refs: {
+      prefix: () => prefixRef.current,
+      suffix: () => suffixRef.current,
+      regex: () => regexRef.current,
+      find: () => findRef.current,
+      replace: () => replaceRef.current,
+      length: () => lengthRef.current,
+      limit: () => limitRef.current
+    }
+  });
 
   useEffect(() => {
-    console.log("[ui] build", UI_BUILD);
-    (async () => {
-      try {
-        const r = await axios.get("http://127.0.0.1:8000/api/health");
-        setHealth(r.data);
-        console.log("[ui] backend health", r.data);
-      } catch (e) {
-        console.error("[ui] health failed", e);
-      }
-    })();
-  }, [UI_BUILD]);
+    (async () => { try { setHealth(await getHealth()); } catch (e) { console.error('[ui] health failed', e); } })();
+  }, []);
 
   return (
     <div>
       <form onSubmit={handleSubmit}>
-        <div className="panel card">
-          <div className="group">
-            <div className="group-title">Filters</div>
-            <div className="grid-2">
-              <label className="inline">
-                <input type="text" placeholder="Prefix" value={params.prefix}
-                  onChange={e => setParams({ ...params, prefix: e.target.value })} ref={prefixRef} />
-              </label>
-              <label className="inline">
-                <input type="text" placeholder="Exclude Prefix" value={params.prefix_not}
-                  onChange={e => setParams({ ...params, prefix_not: e.target.value })} />
-              </label>
-              <label className="inline">
-                <input type="text" placeholder="Suffix" value={params.suffix}
-                  onChange={e => setParams({ ...params, suffix: e.target.value })} ref={suffixRef} />
-              </label>
-              <label className="inline">
-                <input type="text" placeholder="Exclude Suffix" value={params.suffix_not}
-                  onChange={e => setParams({ ...params, suffix_not: e.target.value })} />
-              </label>
-              <label className="inline">
-                <input type="text" placeholder="Regex" value={params.regex}
-                  onChange={e => setParams({ ...params, regex: e.target.value })} ref={regexRef} />
-              </label>
-              <label className="inline">
-                <input type="text" placeholder="Exclude Regex" value={params.regex_not}
-                  onChange={e => setParams({ ...params, regex_not: e.target.value })} />
-              </label>
-            </div>
-          </div>
-        </div>
-
-        <div className="panel card">
-            <div className="group">
-              <div className="group-title">Options</div>
-              <div className="grid-3">
-                <label className="inline">
-                  <input type="text" placeholder="e.g. 8-" value={params.length_spec}
-                    onChange={e => setParams({ ...params, length_spec: e.target.value })} ref={lengthRef} />
-                </label>
-                <label className="inline">
-                  <input type="number" placeholder="Limit" value={params.limit}
-                    onChange={e => setParams({ ...params, limit: e.target.value })} ref={limitRef} />
-                </label>
-                <label className="inline">
-                  <input type="number" min="0" max="100" placeholder="Curated %" value={params.curated_ratio}
-                    onChange={e => setParams({ ...params, curated_ratio: e.target.value })} />
-                </label>
-              </div>
-              <div className="toolbar">
-                <button type="submit" className="btn btn-primary" ref={queryBtnRef}>Query</button>
-                <button type="button" className="btn btn-accent" onClick={commitEdits}>Commit</button>
-                <button type="button" className="btn" onClick={loadSummary}>Load Summary</button>
-              </div>
-            </div>
-          </div>
-
-          <div className="panel card">
-            <div className="group">
-              <div className="group-title">Find &amp; Replace (Splits column)</div>
-              <div className="toolbar">
-                <label className="inline">
-                  <input type="text" placeholder="Find" value={findText} onChange={e => setFindText(e.target.value)} ref={findRef} />
-                </label>
-                <label className="inline">
-                  <input type="text" placeholder="Replace" value={replaceText} onChange={e => setReplaceText(e.target.value)} ref={replaceRef} />
-                </label>
-                <button type="button" className="btn" onClick={applyReplace}>Apply Replace</button>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={onlySelected}
-                    onChange={e => setOnlySelected(e.target.checked)}
-                  /> Only selected rows
-                </label>
-                <button type="button" className="btn" onClick={selectAll}>Select All</button>
-                <button type="button" className="btn" onClick={clearSelection}>Clear Selection</button>
-              </div>
-            </div>
-          </div>
-        </form>
+        <FiltersPanel params={params} setParams={setParams} refs={{ prefixRef, suffixRef, regexRef }} />
+        <OptionsPanel params={params} setParams={setParams} onQuery={handleSubmit} onCommit={commitEdits} onSummary={loadSummary} refs={{ lengthRef, limitRef, queryBtnRef }} />
+        <FindReplacePanel
+          findText={findText} setFindText={setFindText}
+          replaceText={replaceText} setReplaceText={setReplaceText}
+          onlySelected={onlySelected} setOnlySelected={setOnlySelected}
+          onApplyReplace={applyReplace}
+          onSelectAll={() => setSelected(new Set(rows.map(r => r.id)))}
+          onClearSelection={() => setSelected(new Set())}
+          refs={{ findRef, replaceRef }}
+        />
+      </form>
       {loading ? <p>Loading...</p> :
-        <div className="panel card table-wrap">
-          <table className="table">
-            <thead>
-            <tr>
-              <th>Sel</th>
-              <th>#</th>
-              <th>Word</th>
-              <th>Splits</th>
-              <th>Freq</th>
-              <th>Glen</th>
-              <th>Notes</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, idx) => {
-              const changed = row.splits !== baseline[idx];
-              return (
-                <tr key={idx} className={changed ? "row-changed" : ""}>
-                  <td>
-                    <input
-                      type="checkbox"
-                      checked={selected.has(row.id)}
-                      onChange={() => toggleSelected(row.id)}
-                    />
-                  </td>
-                  <td>{row.id}</td>
-                  <td>{row.word}</td>
-                  <td>
-                    <input
-                      type="text"
-                      value={row.splits}
-                      onChange={e => updateRowField(idx, "splits", e.target.value)}
-                    />
-                  </td>
-                  <td>{row.freq}</td>
-                  <td>{row.glen}</td>
-                  <td>
-                    <input
-                      type="text"
-                      value={row.notes}
-                      onChange={e => updateRowField(idx, "notes", e.target.value)}
-                    />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-          </table>
-        </div>
+        <ResultsTable 
+          rows={rows} 
+          baseline={baseline} 
+          selected={selected} 
+          toggleSelected={(id) => setSelected(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; })} 
+          updateRowField={updateRowField} 
+        />
       }
-      {summary && (
-        <div>
-          <h3>Summary</h3>
-          <p>Total words: {summary.total_words}</p>
-          <p>Curated (distinct): {summary.curated_distinct}</p>
-          <p>Remaining (distinct): {summary.remaining_distinct}</p>
-          <p>Curation entries: {summary.curation_entries}</p>
-          <h4>Length distribution</h4>
-          <table>
-            <thead><tr><th>glen</th><th>curated</th><th>remaining</th></tr></thead>
-            <tbody>
-              {Object.keys({
-                ...summary.length_distribution.curated,
-                ...summary.length_distribution.remaining
-              }).sort((a,b)=>Number(a)-Number(b)).map(gl => (
-                <tr key={gl}>
-                  <td>{gl}</td>
-                  <td>{summary.length_distribution.curated[gl] || 0}</td>
-                  <td>{summary.length_distribution.remaining[gl] || 0}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <div className="panel card" style={{ padding: 8 }}>
-        <small>
-          UI {UI_BUILD}
-          {health ? (
-            <> | API {health.build_tag} | {health.app_file} mtime {new Date(health.app_mtime * 1000).toLocaleString()} | words {health.word_count} | curated {health.curated_count}</>
-          ) : " | API: …"}
-        </small>
-      </div>
+      <SummaryPanel summary={summary} />
+      <FooterInfo uiBuild={UI_BUILD} health={health} />
     </div>
   );
 };
