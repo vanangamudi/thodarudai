@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import QueryForm from './QueryForm.jsx'
 import './theme.css';
 
