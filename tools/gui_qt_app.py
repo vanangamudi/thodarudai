@@ -3,8 +3,6 @@ import logging
 import time
 import string
 import sys
-import random
-import math
 import os
 import weakref
 from collections import Counter
@@ -25,6 +23,18 @@ from tools.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
 from tools.trie_word_indexer import TrieWordIndex
 from tools.curation_index import CuratedIndex
 from tools.word_indexer import WordIndex
+from tools.curation_core import (
+    parse_length_spec as cc_parse_length_spec,
+    filter_eligible as cc_filter_eligible,
+    partition_new_old as cc_partition_new_old,
+    mix_curated as cc_mix_curated,
+    default_batch_name as cc_default_batch_name,
+    build_tsv_lines as cc_build_tsv_lines,
+    write_batch_file as cc_write_batch_file,
+    append_ledger as cc_append_ledger,
+    load_reminders as cc_load_reminders,
+    write_reminders as cc_write_reminders,
+)
 
 CURATED_INDEX_CACHE = {}
 def get_shared_curated_index(batches_dir):
@@ -409,37 +419,7 @@ class MainWindow(QMainWindow):
         MyShortcut(QKeySequence("Ctrl+Shift+N"), self, activated=self.open_new_window_from_selection)
 
     def parse_length_spec(self, length_spec):
-        # Parse the length specification.
-        # Default values:
-        min_len = 1
-        max_len = None
-
-        if "-" in length_spec:
-            parts = length_spec.split("-", 1)
-            try:
-                if parts[0]:
-                    min_len = int(parts[0])
-                else:
-                    min_len = 1
-            except ValueError:
-                min_len = 1
-            try:
-                if parts[1]:
-                    max_len = int(parts[1])
-                else:
-                    max_len = None
-            except ValueError:
-                max_len = None
-        else:
-            try:
-                m = int(length_spec)
-                min_len = m
-                max_len = m
-            except ValueError:
-                min_len = 1
-                max_len = None
-
-        return min_len, max_len
+        return cc_parse_length_spec(length_spec)
 
     def _read_query_fields(self):
         """Read and normalize current query fields, including negative filters and curated ratio."""
@@ -479,41 +459,16 @@ class MainWindow(QMainWindow):
         return rows, elapsed_ms
 
     def _apply_negative_filters(self, rows, q):
-        """Filter out rows matching any negative conditions."""
-        out = []
-        for w, fr, gl in rows:
-            if (q["prefix_not"] and w.startswith(q["prefix_not"])) or \
-               (q["suffix_not"] and w.endswith(q["suffix_not"])) or \
-               (q["neg_rx"] and q["neg_rx"].search(w)):
-                continue
-            out.append((w, fr, gl))
-        return out
+        return cc_filter_eligible(rows, q["prefix_not"], q["suffix_not"], q["neg_rx"])
 
     def _partition_new_old(self, rows):
-        """Split into new (uncurated) and old (curated) lists."""
-        new_rows, old_rows = [], []
-        for w, fr, gl in rows:
-            (new_rows if not self.curated.is_curated(w) else old_rows).append((w, fr, gl))
-        return new_rows, old_rows
+        return cc_partition_new_old(rows, self.curated)
 
     def _pick_curated_and_new(self, new_rows, old_rows, limit, curated_ratio):
-        """Select rows honoring curated ratio; with 0.0 never include curated backfill."""
-        if curated_ratio <= 0.0:
-            combined = new_rows[:limit]
-            return combined, len(combined), 0
-        curated_quota = int(math.floor(limit * curated_ratio))
-        curated_pick = []
-        if old_rows and curated_quota > 0:
-            curated_pick = random.sample(old_rows, k=min(curated_quota, len(old_rows)))
-        remaining_slots = max(0, limit - len(curated_pick))
-        new_pick = new_rows[:remaining_slots]
-        leftover = max(0, limit - (len(curated_pick) + len(new_pick)))
-        if leftover > 0:
-            remaining_old = [r for r in old_rows if r not in curated_pick]
-            if remaining_old:
-                curated_pick += random.sample(remaining_old, k=min(leftover, len(remaining_old)))
-        combined = (new_pick + curated_pick)[:limit]
-        return combined, len(new_pick), len(curated_pick)
+        combined = cc_mix_curated(new_rows, old_rows, limit, int(round(curated_ratio * 100.0)))
+        shown_new = sum(1 for r in combined if r in new_rows)
+        shown_curated = len(combined) - shown_new
+        return combined, shown_new, shown_curated
 
     def _log_query_event(self, q):
         self.log_ui_event("QUERY", {
@@ -609,61 +564,13 @@ class MainWindow(QMainWindow):
         msg_lines = []
         msg_lines.append(f"list: {results['list_ms']} ms, {results['list_n']} rows" if "list_ms" in results else "list: error")
         msg_lines.append(f"trie: {results['trie_ms']} ms, {results['trie_n']} rows" if "trie_ms" in results else "trie: error")
-        msg_lines.append(f"list: {results['list_ms']} ms, {results['list_n']} rows" if "list_ms" in results else "list: error")
-        msg_lines.append(f"trie: {results['trie_ms']} ms, {results['trie_n']} rows" if "trie_ms" in results else "trie: error")
         if errors:
             msg_lines.append("Errors: " + "; ".join(errors))
-        QMessageBox.information(self, "Indexer Benchmark", "\n".join(msg_lines))
-        if errors:
-            msg_lines.append("Errors: " + "; ".join(errors))
-        from PyQt5.QtWidgets import QMessageBox
         QMessageBox.information(self, "Indexer Benchmark", "\n".join(msg_lines))
 
-    def build_tsv_lines(self):
-        """
-        Builds a list of strings representing TSV lines from the current table data.
-        The first line is the header: "id\tword\tsplits\tfreq\tglen\tnotes"
-        """
-        lines = []
-        header = "\t".join(["id", "word", "splits", "freq", "glen", "notes"])
-        lines.append(header)
-        row_count = self.table.rowCount()
-        col_count = self.table.columnCount()
-        for row in range(row_count):
-            row_data = []
-            for col in range(col_count):
-                item = self.table.item(row, col)
-                row_data.append(item.text() if item is not None else "")
-            lines.append("\t".join(row_data))
-        return lines
 
     def update_ledger(self, tsv_lines, batch_name):
-        """
-        Given TSV lines (list of strings) built from the table and a batch name,
-        this function appends ledger entries to the ledger file.
-        Each ledger line includes the timestamp, batch name, id, word, splits, and notes.
-        """
-        import os, fcntl, time
-        ledger_path = LEDGER_PATH
-        os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
-        write_header = not os.path.exists(ledger_path) or os.path.getsize(ledger_path) == 0
-        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        with open(ledger_path, "a", encoding="utf-8") as lf:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-            try:
-                if write_header:
-                    lf.write("\t".join(["timestamp", "batch", "id", "word", "splits", "notes"]) + "\n")
-                for ln in tsv_lines[1:]:
-                    if not ln.strip():
-                        continue
-                    cols = ln.split("\t")
-                    rec_id = cols[0].strip()
-                    word = cols[1].strip()
-                    splits = cols[2].strip()
-                    notes = cols[5].strip() if len(cols) > 5 else ""
-                    lf.write(f"{ts}\t{batch_name}\t{rec_id or word}\t{word}\t{splits}\t{notes}\n")
-            finally:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+        cc_append_ledger(LEDGER_PATH, batch_name, tsv_lines)
 
     def _compute_summary_snapshot(self):
         # Use precomputed maps; avoid scanning the full word list on every save.
@@ -703,25 +610,13 @@ class MainWindow(QMainWindow):
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
 
-    def sanitize_component(self, s):
-        import re
-        # Replace path separators, Windows-reserved chars, and whitespace with underscores, trim length
-        return re.sub(r'[\\/:*?"<>|\s]+', '_', s).strip('_')[:64]
 
     def generate_batch_name(self):
-       # Compute a default batch name in the format:
-       # {timestamp}-{prefix}{min_len}{suffix}.tsv
-       timestamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
-       prefix = self.prefix_edit.text().strip()
-       suffix = self.suffix_edit.text().strip()
-       length_spec = self.length_edit.text().strip()
-       # Remove any characters that might interfere with filenames.
-       # safe_prefix = "".join(c for c in prefix if c.isalnum())
-       # safe_suffix = "".join(c for c in suffix if c.isalnum())
-       safe_prefix = self.sanitize_component(prefix)
-       safe_suffix = self.sanitize_component(suffix)
-       safe_len = self.sanitize_component(length_spec)
-       return f"{timestamp}-{safe_prefix}-{safe_len}-{safe_suffix}.tsv"
+        return cc_default_batch_name(
+            self.prefix_edit.text().strip(),
+            self.suffix_edit.text().strip(),
+            self.length_edit.text().strip()
+        )
 
     def _collect_edited_rows(self):
         """Return list of [id, word, splits, freq, glen, notes] for rows whose splits changed."""
@@ -743,12 +638,8 @@ class MainWindow(QMainWindow):
         return edited_rows
 
     def _write_batch_file(self, batch_name, edited_rows):
-        """Write batch TSV file and return (filepath, tsv_lines)."""
-        tsv_lines = ["\t".join(["id","word","splits","freq","glen","notes"])]
-        tsv_lines.extend("\t".join(r) for r in edited_rows)
-        filepath = os.path.abspath(os.path.join(self.batch_dir, batch_name))
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write("\n".join(tsv_lines) + "\n")
+        tsv_lines = cc_build_tsv_lines(edited_rows)
+        filepath = cc_write_batch_file(self.batch_dir, batch_name, tsv_lines)
         return filepath, tsv_lines
 
     def _refresh_curated_and_broadcast(self, tsv_lines):
@@ -888,37 +779,10 @@ class MainWindow(QMainWindow):
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
     def load_reminders(self):
-        """Load reminder words from REMINDERS_PATH into self.reminders."""
-        self.reminders = set()
-        try:
-            with open(REMINDERS_PATH, "r", encoding="utf-8") as f:
-                header = f.readline().strip().split("\t")
-                idx = {h: i for i, h in enumerate(header)}
-                if "word" not in idx:
-                    return
-                for ln in f:
-                    if not ln.strip():
-                        continue
-                    cols = ln.rstrip("\n").split("\t")
-                    w = cols[idx["word"]]
-                    if w:
-                        self.reminders.add(w)
-        except FileNotFoundError:
-            pass
+        self.reminders = set(cc_load_reminders(REMINDERS_PATH))
 
     def _write_reminders_file(self):
-        """Rewrite reminders file from self.reminders."""
-        import os, fcntl, time
-        os.makedirs(os.path.dirname(REMINDERS_PATH), exist_ok=True)
-        ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        with open(REMINDERS_PATH, "w", encoding="utf-8") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            try:
-                f.write("timestamp\tword\tnotes\n")
-                for w in sorted(self.reminders):
-                    f.write(f"{ts}\t{w}\t\n")
-            finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        cc_write_reminders(REMINDERS_PATH, self.reminders)
 
     def add_to_reminders(self, words):
         """Add given words to reminders, persist, and log."""

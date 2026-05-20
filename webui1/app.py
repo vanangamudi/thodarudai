@@ -11,6 +11,21 @@ BUILD_TAG = time.strftime("%Y%m%dT%H%M%S", time.localtime(STARTUP_TS))
 from fastapi.concurrency import run_in_threadpool
 from tools.word_indexer import WordIndex
 from tools.curation_index import CuratedIndex
+from tools.curation_core import (
+    normalize_query_fields, run_query,
+    parse_length_spec, compile_neg_regex,  # kept if you still use them elsewhere
+    filter_eligible as core_filter_eligible,
+    partition_new_old as core_partition_new_old,
+    mix_curated as core_mix_curated,
+    sanitize_component, default_batch_name,
+    build_tsv_lines as core_build_tsv_lines,
+    write_batch_file as core_write_batch_file,
+    append_ledger as core_append_ledger,
+    load_reminders as core_load_reminders,
+    write_reminders as core_write_reminders,
+    compute_summary_data as core_compute_summary_data,
+)
+# (This entire duplicate import block has been removed.)
 
 # Configuration constants (reuse file paths from existing code)
 WORDLIST_PATH = os.path.abspath("data/word-index.tsv")
@@ -22,30 +37,6 @@ REMINDERS_PATH = os.path.abspath("data/reminders.tsv")
 WORD_INDEX = None
 CURATED = None
 
-def parse_length_spec(length_spec: str):
-    min_len = 1
-    max_len = None
-    if "-" in length_spec:
-        parts = length_spec.split("-", 1)
-        try:
-            if parts[0]:
-                min_len = int(parts[0])
-        except ValueError:
-            min_len = 1
-        try:
-            if parts[1]:
-                max_len = int(parts[1])
-        except ValueError:
-            max_len = None
-    else:
-        try:
-            m = int(length_spec)
-            min_len = m
-            max_len = m
-        except ValueError:
-            min_len = 1
-            max_len = None
-    return min_len, max_len
 
 def sanitize_component(s: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', '_', s).strip('_')[:64]
@@ -302,7 +293,7 @@ def get_ui():
 def get_reminders():
     logger.info("REMINDERS get")
     try:
-        return {"words": sorted(load_reminders())}
+        return {"words": sorted(core_load_reminders(REMINDERS_PATH))}
     except Exception as e:
         logging.exception("Error in reminders get")
         raise HTTPException(status_code=500, detail=str(e))
@@ -318,14 +309,14 @@ def update_reminders(action: str = Form(...), words_json: str = Form("[]")):
     import json
     try:
         words = set(json.loads(words_json) or [])
-        current = load_reminders()
+        current = core_load_reminders(REMINDERS_PATH)
         if action == "add":
             current |= words
         elif action == "remove":
             current -= words
         else:
             raise HTTPException(status_code=400, detail="invalid action")
-        write_reminders(current)
+        core_write_reminders(REMINDERS_PATH, current)
         return {"status": "ok", "count": len(current)}
     except Exception as e:
         logging.exception("Error in reminders update")
@@ -335,7 +326,7 @@ def update_reminders(action: str = Form(...), words_json: str = Form("[]")):
 def get_reminder_results():
     logger.info("REMINDERS results")
     try:
-        rem = load_reminders()
+        rem = core_load_reminders(REMINDERS_PATH)
         words_map = {w: (w, fr, gl) for (w, fr, gl) in WORD_INDEX.words}
         results = [words_map[w] for w in sorted(rem) if w in words_map]
         return {"results": results}
@@ -382,10 +373,15 @@ def query_words(request: Request,
                                         length_spec, limit, curated_ratio)
         t0 = time.perf_counter()
         logger.info("QUERY %s", {k: fields[k] for k in ("prefix","suffix","regex","length_spec","limit","curated_ratio","prefix_not","suffix_not","regex_not")})
-        raw, _, _, neg_rx = run_index_query(fields)
-        eligible = filter_eligible(raw, fields, neg_rx)
-        new_rows, old_rows = partition_new_old(eligible)
-        combined = mix_curated(new_rows, old_rows, fields["limit"], fields["curated_ratio"])
+        min_len, max_len = parse_length_spec(fields["length_spec"])
+        probe_limit = min(fields["limit"] * 5, max(fields["limit"] + 500, 5000))
+        raw = WORD_INDEX.query_words(prefix=fields["prefix"], suffix=fields["suffix"],
+                                 min_len=min_len, max_len=max_len,
+                                 limit=probe_limit, offset=0, regex=fields["regex"])
+        neg_rx = compile_neg_regex(fields["regex_not"])
+        eligible = core_filter_eligible(raw, fields["prefix_not"], fields["suffix_not"], neg_rx)
+        new_rows, old_rows = core_partition_new_old(eligible, CURATED)
+        combined = core_mix_curated(new_rows, old_rows, fields["limit"], fields["curated_ratio"])
         dur_ms = int((time.perf_counter() - t0) * 1000)
         logger.info("QUERY_STATS raw=%d eligible=%d new=%d curated=%d returned=%d dur_ms=%d",
                     len(raw), len(eligible), len(new_rows), len(old_rows), len(combined), dur_ms)
@@ -404,9 +400,9 @@ def commit_edits(edited_rows: str = Form(...), batch: str = Form("")):
         raise HTTPException(status_code=400, detail=f"invalid edited_rows: {e}")
     try:
         batch_name = batch if batch else f"{time.strftime('%Y%m%dT%H%M%S')}-batch.tsv"
-        tsv_lines = build_tsv_lines(rows)
-        batch_path = write_batch_file(BATCHES_DIR, batch_name, tsv_lines)
-        ledger_abs = append_ledger(LEDGER_PATH, batch_name, tsv_lines)
+        tsv_lines = core_build_tsv_lines(rows)
+        batch_path = core_write_batch_file(BATCHES_DIR, batch_name, tsv_lines)
+        ledger_abs = core_append_ledger(LEDGER_PATH, batch_name, tsv_lines)
         logger.info("COMMIT done rows=%d batch=%s wrote_batch=%s wrote_ledger=%s",
                     len(rows), batch_name, batch_path, ledger_abs)
         return {"status": "committed",
@@ -421,7 +417,7 @@ def commit_edits(edited_rows: str = Form(...), batch: str = Form("")):
 @app.get("/api/summary")
 def get_summary():
     try:
-        return compute_summary_data()
+        return core_compute_summary_data(WORD_INDEX, CURATED)
     except Exception as e:
         logging.exception("Error in summary endpoint")
         raise HTTPException(status_code=500, detail=str(e))
