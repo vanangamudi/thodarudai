@@ -4,6 +4,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import os, time, logging, math, random
 import re
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+logger = logging.getLogger("webui")
 from fastapi.concurrency import run_in_threadpool
 from tools.word_indexer import WordIndex
 from tools.curation_index import CuratedIndex
@@ -109,6 +111,28 @@ static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    method = request.method
+    path = request.url.path
+    query = request.url.query
+    origin = request.headers.get("origin", "-")
+    ctype = request.headers.get("content-type", "-")
+    clen = request.headers.get("content-length", "-")
+    logger.info("REQ %s %s%s origin=%s ctype=%s clen=%s",
+                method, path, f"?{query}" if query else "", origin, ctype, clen)
+    try:
+        response = await call_next(request)
+        status = getattr(response, "status_code", 0)
+        dur_ms = int((time.perf_counter() - start) * 1000)
+        logger.info("RES %s %s status=%s dur_ms=%d", method, path, status, dur_ms)
+        return response
+    except Exception as e:
+        dur_ms = int((time.perf_counter() - start) * 1000)
+        logger.exception("ERR %s %s dur_ms=%d: %s", method, path, dur_ms, e)
+        raise
+
 @app.get("/", response_class=HTMLResponse)
 def get_ui():
     html_content = """
@@ -149,7 +173,19 @@ def query_words(request: Request,
                 regex_not: str = Form(""),
                 curated_ratio: int = Form(20)):
     try:
+        # Normalize inputs (avoid trailing/leading spaces breaking prefix/suffix matches)
+        prefix = (prefix or "").strip()
+        suffix = (suffix or "").strip()
+        regex = (regex or "").strip()
+        prefix_not = (prefix_not or "").strip()
+        suffix_not = (suffix_not or "").strip()
+        regex_not = (regex_not or "").strip()
+        length_spec = (length_spec or "").strip() or "8-"
 
+        t0 = time.perf_counter()
+        logger.info("QUERY prefix='%s' suffix='%s' regex='%s' len='%s' limit=%s curated_ratio=%s prefix_not='%s' suffix_not='%s' regex_not='%s'",
+                    prefix, suffix, regex, length_spec, limit, curated_ratio, prefix_not, suffix_not, regex_not)
+        
         min_len, max_len = parse_length_spec(length_spec)
         probe_limit = min(limit * 5, max(limit + 500, 5000))
         raw = WORD_INDEX.query_words(
@@ -162,7 +198,8 @@ def query_words(request: Request,
         if regex_not:
             try:
                 neg_rx = re.compile(regex_not)
-            except re.error:
+            except re.error as ex:
+                logger.warning("Invalid regex_not '%s': %s", regex_not, ex)
                 neg_rx = None
 
         eligible = []
@@ -197,6 +234,9 @@ def query_words(request: Request,
                     curated_pick += random.sample(remaining_old, k=min(leftover, len(remaining_old)))
             combined = (new_pick + curated_pick)[:limit]
         
+        dur_ms = int((time.perf_counter() - t0) * 1000)
+        logger.info("QUERY_STATS raw=%d eligible=%d new=%d curated=%d returned=%d dur_ms=%d",
+                    len(raw), len(eligible), len(new_rows), len(old_rows), len(combined), dur_ms)
         # Check if the client expects HTML. If yes, format an HTML table.
         accept_header = request.headers.get("accept", "")
         if "text/html" in accept_header.lower():
@@ -231,7 +271,7 @@ def query_words(request: Request,
             """
             return HTMLResponse(content=html)
         else:
-            return {"results": combined, "elapsed_ms": int((time.time()*1000) % 1000)}
+            return {"results": combined, "elapsed_ms": dur_ms}
     except Exception as e:
         logging.exception("Error in query endpoint")
         raise HTTPException(status_code=500, detail=str(e))
@@ -247,6 +287,7 @@ def commit_edits(batch: str = Form(None), edited_rows: str = Form(...)):
     try:
         rows = json.loads(edited_rows)
         batch_name = batch if batch else f"batch-{int(time.time())}.tsv"
+        logger.info("COMMIT start rows=%d batch=%s", len(rows), batch_name)
         tsv_lines = ["\t".join(["id", "word", "splits", "freq", "glen", "notes"])]
         for r in rows:
             tsv_lines.append("\t".join(r))
@@ -266,6 +307,7 @@ def commit_edits(batch: str = Form(None), edited_rows: str = Form(...)):
                     lf.write(f"{ts}\t{batch_name}\t{rec_id or word}\t{word}\t{splits}\t{notes}\n")
             finally:
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+        logger.info("COMMIT done rows=%d batch=%s wrote_ledger=%s", len(rows), batch_name, LEDGER_PATH)
         return {"status": "committed", "batch": batch_name, "rows": len(rows)}
     except Exception as e:
         logging.exception("Error in commit endpoint")
@@ -273,6 +315,7 @@ def commit_edits(batch: str = Form(None), edited_rows: str = Form(...)):
 
 @app.get("/api/summary")
 def get_summary():
+    logger.info("SUMMARY requested")
     try:
         # Build glen_map and index_words from WordIndex.words
         # words is list of (word, freq, glen)
@@ -312,6 +355,7 @@ def get_summary():
 
 @app.get("/api/reminders")
 def get_reminders():
+    logger.info("REMINDERS get")
     try:
         return {"words": sorted(load_reminders())}
     except Exception as e:
@@ -321,6 +365,7 @@ def get_reminders():
 from fastapi import Body
 @app.post("/api/reminders")
 def update_reminders(action: str = Form(...), words_json: str = Form("[]")):
+    logger.info("REMINDERS update action=%s", action)
     """
     action: 'add' or 'remove'
     words_json: JSON-serialized list of words
@@ -343,6 +388,7 @@ def update_reminders(action: str = Form(...), words_json: str = Form("[]")):
 
 @app.get("/api/reminders/results")
 def get_reminder_results():
+    logger.info("REMINDERS results")
     try:
         rem = load_reminders()
         words_map = {w: (w, fr, gl) for (w, fr, gl) in WORD_INDEX.words}

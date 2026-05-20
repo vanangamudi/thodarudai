@@ -1,5 +1,33 @@
 import React, { useState } from 'react';
 import axios from 'axios';
+axios.defaults.timeout = 20000; // 20s dev-timeout to surface hung requests
+
+// Log every axios request/response
+axios.interceptors.request.use(cfg => {
+  console.log("[axios][request]", cfg.method?.toUpperCase(), cfg.url, cfg.headers, cfg.data);
+  return cfg;
+});
+axios.interceptors.response.use(
+  resp => {
+    const len = Array.isArray(resp.data?.results) ? resp.data.results.length : undefined;
+    console.log("[axios][response]", resp.config?.url, resp.status, len !== undefined ? `results=${len}` : resp.data);
+    return resp;
+  },
+  err => {
+    console.error("[axios][error]", err.message, err.response?.status, err.response?.data);
+    return Promise.reject(err);
+  }
+);
+
+// Catch unhandled promise rejections and window errors
+if (typeof window !== "undefined") {
+  window.addEventListener("unhandledrejection", (e) => {
+    console.error("[window][unhandledrejection]", e.reason);
+  });
+  window.addEventListener("error", (e) => {
+    console.error("[window][error]", e.message, e.error);
+  });
+}
 
 const QueryForm = () => {
   const [params, setParams] = useState({
@@ -23,9 +51,20 @@ const QueryForm = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
+    console.log("[ui] submit query", params);
     try {
+      const clean = {
+        ...params,
+        prefix: (params.prefix || "").trim(),
+        suffix: (params.suffix || "").trim(),
+        regex: (params.regex || "").trim(),
+        prefix_not: (params.prefix_not || "").trim(),
+        suffix_not: (params.suffix_not || "").trim(),
+        regex_not: (params.regex_not || "").trim(),
+        length_spec: String(params.length_spec || "").trim() || "8-",
+      };
       const formData = new URLSearchParams();
-      Object.entries(params).forEach(([key, value]) => {
+      Object.entries(clean).forEach(([key, value]) => {
         formData.append(key, value);
       });
       const response = await axios.post("http://127.0.0.1:8000/api/query", formData);
@@ -38,12 +77,14 @@ const QueryForm = () => {
         splits: rec[0],
         notes: "",
       }));
+      console.log("[ui] query ok rows", newRows.length);
       setRows(newRows);
       setBaseline(newRows.map(r => r.splits));
     } catch (err) {
-      console.error("Query error", err);
+      console.error("[ui] query failed", err);
     }
     setLoading(false);
+    console.log("[ui] submit done");
   };
   
   const updateRowField = (index, field, value) => {
@@ -55,20 +96,24 @@ const QueryForm = () => {
   };
 
   const applyReplace = () => {
+    console.log("[ui] applyReplace find=", findText, "replace=", replaceText);
     if (!findText) return;
     setRows(prev => prev.map(r => ({ ...r, splits: r.splits.replace(findText, replaceText) })));
   };
 
   const loadSummary = async () => {
+    console.log("[ui] load summary");
     try {
       const r = await axios.get("http://127.0.0.1:8000/api/summary");
       setSummary(r.data);
+      console.log("[ui] summary ok");
     } catch (e) {
-      console.error("Summary error", e);
+      console.error("[ui] summary failed", e);
     }
   };
 
   const commitEdits = async () => {
+    console.log("[ui] commit start");
     try {
       const edited = rows
         .map((r, idx) => ({ r, idx }))
@@ -91,11 +136,13 @@ const QueryForm = () => {
       const fd = new URLSearchParams();
       if (batch) fd.append("batch", batch);
       fd.append("edited_rows", JSON.stringify(edited));
+      console.log("[ui] commit rows", edited.length, "batch?", !!batch);
       const resp = await axios.post("http://127.0.0.1:8000/api/commit", fd);
       alert(`Committed ${resp.data.rows} row(s)${batch ? ` in ${batch}` : ""}.`);
+      console.log("[ui] commit ok", resp.data);
       setBaseline(rows.map(r => r.splits));
     } catch (e) {
-      console.error("Commit error", e);
+      console.error("[ui] commit failed", e);
       alert("Commit failed: " + (e.response?.data?.detail || e.message));
     }
   };
