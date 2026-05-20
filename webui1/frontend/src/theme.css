@@ -11,6 +11,32 @@
   --warn: #f59e0b;
   --changed: #fff7cc;
 }
+.group {
+  margin: 4px 0 10px 0;
+}
+.group-title {
+  font-weight: 600;
+  color: var(--muted);
+  margin: 2px 0 8px 0;
+  font-size: 12px;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
+  gap: 8px 12px;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 8px 12px;
+}
+label.inline {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 
 @media (prefers-color-scheme: dark) {
   :root {

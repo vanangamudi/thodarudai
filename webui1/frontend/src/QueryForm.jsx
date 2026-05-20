@@ -183,41 +183,93 @@ const QueryForm = () => {
     <div>
       <div className="panel card">
         <form onSubmit={handleSubmit}>
-        <input type="text" placeholder="Prefix" value={params.prefix}
-          onChange={e => setParams({ ...params, prefix: e.target.value })} />
-        <input type="text" placeholder="Exclude Prefix" value={params.prefix_not}
-          onChange={e => setParams({ ...params, prefix_not: e.target.value })} />
-        <input type="text" placeholder="Suffix" value={params.suffix}
-          onChange={e => setParams({ ...params, suffix: e.target.value })} />
-        <input type="text" placeholder="Exclude Suffix" value={params.suffix_not}
-          onChange={e => setParams({ ...params, suffix_not: e.target.value })} />
-        <input type="text" placeholder="Regex" value={params.regex}
-          onChange={e => setParams({ ...params, regex: e.target.value })} />
-        <input type="text" placeholder="Exclude Regex" value={params.regex_not}
-          onChange={e => setParams({ ...params, regex_not: e.target.value })} />
-        <input type="text" placeholder="Length Spec" value={params.length_spec}
-          onChange={e => setParams({ ...params, length_spec: e.target.value })} />
-        <input type="number" placeholder="Limit" value={params.limit}
-          onChange={e => setParams({ ...params, limit: e.target.value })} />
-        <input type="number" min="0" max="100" placeholder="Curated %" value={params.curated_ratio}
-          onChange={e => setParams({ ...params, curated_ratio: e.target.value })} />
-        <button type="submit" className="btn btn-primary">Query</button>
-        <input type="text" placeholder="Find" value={findText} onChange={e => setFindText(e.target.value)} />
-        <input type="text" placeholder="Replace" value={replaceText} onChange={e => setReplaceText(e.target.value)} />
-        <button type="button" className="btn" onClick={applyReplace}>Apply Replace</button>
-        <label style={{ marginLeft: 8 }}>
-          <input
-            type="checkbox"
-            checked={onlySelected}
-            onChange={e => setOnlySelected(e.target.checked)}
-          /> Only selected rows
-        </label>
-        <button type="button" className="btn" onClick={selectAll}>Select All</button>
-        <button type="button" className="btn" onClick={clearSelection}>Clear Selection</button>
-        <button type="button" className="btn btn-accent" onClick={commitEdits}>Commit</button>
-        <button type="button" className="btn" onClick={loadSummary}>Load Summary</button>
-      </form>
-    </div>
+          <div className="group">
+            <div className="group-title">Filters</div>
+            <div className="grid-2">
+              <label className="inline">
+                Prefix
+                <input type="text" placeholder="Prefix" value={params.prefix}
+                  onChange={e => setParams({ ...params, prefix: e.target.value })} />
+              </label>
+              <label className="inline">
+                Exclude Prefix
+                <input type="text" placeholder="Exclude Prefix" value={params.prefix_not}
+                  onChange={e => setParams({ ...params, prefix_not: e.target.value })} />
+              </label>
+              <label className="inline">
+                Suffix
+                <input type="text" placeholder="Suffix" value={params.suffix}
+                  onChange={e => setParams({ ...params, suffix: e.target.value })} />
+              </label>
+              <label className="inline">
+                Exclude Suffix
+                <input type="text" placeholder="Exclude Suffix" value={params.suffix_not}
+                  onChange={e => setParams({ ...params, suffix_not: e.target.value })} />
+              </label>
+              <label className="inline">
+                Regex
+                <input type="text" placeholder="Regex" value={params.regex}
+                  onChange={e => setParams({ ...params, regex: e.target.value })} />
+              </label>
+              <label className="inline">
+                Exclude Regex
+                <input type="text" placeholder="Exclude Regex" value={params.regex_not}
+                  onChange={e => setParams({ ...params, regex_not: e.target.value })} />
+              </label>
+            </div>
+          </div>
+      
+          <div className="group">
+            <div className="group-title">Options</div>
+            <div className="grid-3">
+              <label className="inline">
+                Length Spec
+                <input type="text" placeholder="e.g. 8-" value={params.length_spec}
+                  onChange={e => setParams({ ...params, length_spec: e.target.value })} />
+              </label>
+              <label className="inline">
+                Limit
+                <input type="number" placeholder="Limit" value={params.limit}
+                  onChange={e => setParams({ ...params, limit: e.target.value })} />
+              </label>
+              <label className="inline">
+                Curated %
+                <input type="number" min="0" max="100" placeholder="Curated %" value={params.curated_ratio}
+                  onChange={e => setParams({ ...params, curated_ratio: e.target.value })} />
+              </label>
+            </div>
+            <div className="toolbar">
+              <button type="submit" className="btn btn-primary">Query</button>
+              <button type="button" className="btn btn-accent" onClick={commitEdits}>Commit</button>
+              <button type="button" className="btn" onClick={loadSummary}>Load Summary</button>
+            </div>
+          </div>
+      
+          <div className="group">
+            <div className="group-title">Find &amp; Replace (Splits column)</div>
+            <div className="toolbar">
+              <label className="inline">
+                Find
+                <input type="text" placeholder="Find" value={findText} onChange={e => setFindText(e.target.value)} />
+              </label>
+              <label className="inline">
+                Replace
+                <input type="text" placeholder="Replace" value={replaceText} onChange={e => setReplaceText(e.target.value)} />
+              </label>
+              <button type="button" className="btn" onClick={applyReplace}>Apply Replace</button>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={onlySelected}
+                  onChange={e => setOnlySelected(e.target.checked)}
+                /> Only selected rows
+              </label>
+              <button type="button" className="btn" onClick={selectAll}>Select All</button>
+              <button type="button" className="btn" onClick={clearSelection}>Clear Selection</button>
+            </div>
+          </div>
+        </form>
+      </div>
       {loading ? <p>Loading...</p> :
         <div className="panel card table-wrap">
           <table className="table">

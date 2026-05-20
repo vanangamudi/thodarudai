@@ -4,8 +4,8 @@ import './theme.css';
 
 export default function App() {
   return (
-    <div style={{ padding: 16 }}>
-      <h2>Tamil Splits Web UI</h2>
+    <div className="app-container">
+      <h2 className="app-title">Tamil Splits Web UI</h2>
       <QueryForm />
     </div>
   )
