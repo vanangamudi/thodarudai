@@ -1,5 +1,6 @@
 import React from 'react'
 import QueryForm from './QueryForm.jsx'
+import './theme.css';
 
 export default function App() {
   return (

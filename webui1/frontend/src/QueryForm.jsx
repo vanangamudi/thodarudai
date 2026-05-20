@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import axios from 'axios';
+import './theme.css';
 axios.defaults.timeout = 20000; // 20s dev-timeout to surface hung requests
 
 // Log every axios request/response
@@ -47,6 +48,8 @@ const QueryForm = () => {
   const [findText, setFindText] = useState("");
   const [replaceText, setReplaceText] = useState("");
   const [summary, setSummary] = useState(null);
+  const [onlySelected, setOnlySelected] = useState(false);
+  const [selected, setSelected] = useState(new Set());
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -80,6 +83,7 @@ const QueryForm = () => {
       console.log("[ui] query ok rows", newRows.length);
       setRows(newRows);
       setBaseline(newRows.map(r => r.splits));
+      setSelected(new Set());
     } catch (err) {
       console.error("[ui] query failed", err);
     }
@@ -96,9 +100,37 @@ const QueryForm = () => {
   };
 
   const applyReplace = () => {
-    console.log("[ui] applyReplace find=", findText, "replace=", replaceText);
+    console.log("[ui] applyReplace find=", findText, "replace=", replaceText, "onlySelected=", onlySelected);
     if (!findText) return;
-    setRows(prev => prev.map(r => ({ ...r, splits: r.splits.replace(findText, replaceText) })));
+    let changed = 0;
+    const applyToId = (id) => !onlySelected || selected.has(id);
+    setRows(prev => prev.map(r => {
+      if (!applyToId(r.id)) return r;
+      const newSplits = (r.splits || "").replace(findText, replaceText);
+      if (newSplits !== r.splits) changed += 1;
+      return { ...r, splits: newSplits };
+    }));
+    console.log("[ui] applyReplace changed cells:", changed);
+    if (changed === 0) {
+      alert("No replacements were made (find text not found in selected scope).");
+    }
+  };
+
+  const toggleSelected = (id) => {
+    setSelected(prev => {
+      const s = new Set(prev);
+      if (s.has(id)) s.delete(id);
+      else s.add(id);
+      return s;
+    });
+  };
+
+  const selectAll = () => {
+    setSelected(new Set(rows.map(r => r.id)));
+  };
+
+  const clearSelection = () => {
+    setSelected(new Set());
   };
 
   const loadSummary = async () => {
@@ -149,7 +181,8 @@ const QueryForm = () => {
   
   return (
     <div>
-      <form onSubmit={handleSubmit}>
+      <div className="panel card">
+        <form onSubmit={handleSubmit}>
         <input type="text" placeholder="Prefix" value={params.prefix}
           onChange={e => setParams({ ...params, prefix: e.target.value })} />
         <input type="text" placeholder="Exclude Prefix" value={params.prefix_not}
@@ -168,17 +201,29 @@ const QueryForm = () => {
           onChange={e => setParams({ ...params, limit: e.target.value })} />
         <input type="number" min="0" max="100" placeholder="Curated %" value={params.curated_ratio}
           onChange={e => setParams({ ...params, curated_ratio: e.target.value })} />
-        <button type="submit">Query</button>
-        <button type="button" onClick={applyReplace}>Apply Replace</button>
+        <button type="submit" className="btn btn-primary">Query</button>
         <input type="text" placeholder="Find" value={findText} onChange={e => setFindText(e.target.value)} />
         <input type="text" placeholder="Replace" value={replaceText} onChange={e => setReplaceText(e.target.value)} />
-        <button type="button" onClick={commitEdits}>Commit</button>
-        <button type="button" onClick={loadSummary}>Load Summary</button>
+        <button type="button" className="btn" onClick={applyReplace}>Apply Replace</button>
+        <label style={{ marginLeft: 8 }}>
+          <input
+            type="checkbox"
+            checked={onlySelected}
+            onChange={e => setOnlySelected(e.target.checked)}
+          /> Only selected rows
+        </label>
+        <button type="button" className="btn" onClick={selectAll}>Select All</button>
+        <button type="button" className="btn" onClick={clearSelection}>Clear Selection</button>
+        <button type="button" className="btn btn-accent" onClick={commitEdits}>Commit</button>
+        <button type="button" className="btn" onClick={loadSummary}>Load Summary</button>
       </form>
+    </div>
       {loading ? <p>Loading...</p> :
-        <table>
-          <thead>
+        <div className="panel card table-wrap">
+          <table className="table">
+            <thead>
             <tr>
+              <th>Sel</th>
               <th>#</th>
               <th>Word</th>
               <th>Splits</th>
@@ -188,30 +233,41 @@ const QueryForm = () => {
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, idx) => (
-              <tr key={idx}>
-                <td>{row.id}</td>
-                <td>{row.word}</td>
-                <td>
-                  <input
-                    type="text"
-                    value={row.splits}
-                    onChange={e => updateRowField(idx, "splits", e.target.value)}
-                  />
-                </td>
-                <td>{row.freq}</td>
-                <td>{row.glen}</td>
-                <td>
-                  <input
-                    type="text"
-                    value={row.notes}
-                    onChange={e => updateRowField(idx, "notes", e.target.value)}
-                  />
-                </td>
-              </tr>
-            ))}
+            {rows.map((row, idx) => {
+              const changed = row.splits !== baseline[idx];
+              return (
+                <tr key={idx} className={changed ? "row-changed" : ""}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(row.id)}
+                      onChange={() => toggleSelected(row.id)}
+                    />
+                  </td>
+                  <td>{row.id}</td>
+                  <td>{row.word}</td>
+                  <td>
+                    <input
+                      type="text"
+                      value={row.splits}
+                      onChange={e => updateRowField(idx, "splits", e.target.value)}
+                    />
+                  </td>
+                  <td>{row.freq}</td>
+                  <td>{row.glen}</td>
+                  <td>
+                    <input
+                      type="text"
+                      value={row.notes}
+                      onChange={e => updateRowField(idx, "notes", e.target.value)}
+                    />
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
-        </table>
+          </table>
+        </div>
       }
       {summary && (
         <div>
