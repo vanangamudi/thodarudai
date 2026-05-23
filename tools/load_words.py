@@ -16,8 +16,7 @@ Usage examples:
 
 import sys, os, sqlite3, time
 import argparse
-import arichuvadi as ari
-from tools.profile import Profile, default_profile
+from tools.profile import Profile
 from tools.common import count_words
 
 # Reuse the openfile helper from build_word_index.py:

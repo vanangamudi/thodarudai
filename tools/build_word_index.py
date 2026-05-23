@@ -9,9 +9,6 @@ Grapheme length (glen) is computed via the 'arichuvadi.length()' function provid
 
 """
 import sys
-import gzip
-from collections import Counter
-import arichuvadi as ari
 from tools.profile import Profile, default_profile
 
 def build_arg_parser():

@@ -92,6 +92,8 @@ def build_tsv_lines(rows: List[List[str]]) -> List[str]:
         lines.append("\t".join(r))
     return lines
 
+# NOTE: Prefer tools.storage backends (FileStorage/SqliteStorage/PostgresStorage).
+# These helpers are retained for backward-compatibility; consider removing when callers are migrated.
 def write_batch_file(batch_dir: str, batch_name: str, tsv_lines: List[str]) -> str:
     os.makedirs(batch_dir, exist_ok=True)
     path = os.path.abspath(os.path.join(batch_dir, batch_name))

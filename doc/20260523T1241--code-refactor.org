@@ -1,0 +1,105 @@
+* 2026-05-23 Unification landing (implemented)
+
+- Shared helpers
+  - New =tools/common.py= centralizes:
+    - =openfile()=: gz-aware file opener.
+    - =count_words(filepaths)=: aggregates TSV inputs into =(word, freq, glen)= using =ari.length()=, sorted by =(-glen, -freq, word)=.
+
+- Word index build/load
+  - =tools/build_word_index.py= is now a thin wrapper around =tools.common.count_words=; it prints a canonical TSV with header =word<TAB>freq<TAB>glen=.
+  - =tools/load_words.py= reuses =count_words= and supports:
+    - file mode: write TSV to a path,
+    - sqlite mode: upsert into table =words(word PRIMARY KEY, freq, glen)=.
+
+- Single dataset exporter
+  - New =tools/export_dataset.py= wraps =tools/export_batches_dataset.export_dataset()= and is now the documented entry point.
+  - =tools/train_tokenizer.py= message updated to direct users to ~python -m tools.export_dataset~.
+
+- Backend consolidation
+  - =webui1/app.py= imports query normalization/filtering from =tools.curation_core=:
+    - =normalize_query_fields=, =parse_length_spec=, =compile_neg_regex=, =filter_eligible=, =partition_new_old=, =mix_curated=
+    - =default_batch_name=, =build_tsv_lines=
+    - =load_reminders=, =write_reminders=
+    - =compute_summary_data=
+  - Storage is abstracted via =tools.storage=:
+    - =FileStorage= (TSV batches/ledger/reminders under =data/=)
+    - =SqliteStorage= (SQLite DB: tables =ledger=, =reminders=)
+    - Select via env vars =STORAGE_BACKEND= (fs|sqlite) and =SQLITE_PATH= for DB path.
+
+- Curated index
+  - =tools.curation_index.{CuratedIndex, CuratedIndexDB}= provide Bloom-filter-backed curated lookups from file or DB storage and support incremental =update_from_batch()=.
+
+- Word indexers
+  - =tools.word_indexer.WordIndex= (list-based) remains default (backend and GUI).
+  - =tools.trie_word_indexer.TrieWordIndex= added; GUI can compare or switch indexers; tries built from =word-index.tsv= via =OnDiskTrie=.
+
+- Storage fixes
+  - tools/storage.py: removed duplicate append_summary in SqliteStorage; kept a single DB-backed append_summary.
+
+- Profiles and paths
+  - =tools.profile.Profile= standardizes paths: =wordlist_path=, =ledger_path=, =batches_dir=, =ui_log_path=, =reminders_path=, =datasets_dir=, =models_dir=; =default_profile= is available.
+
+- CLI runbook
+  - Build TSV:
+    #+begin_example
+    python -m tools.build_word_index [--profile P] [--base_dir DIR] [--out out.tsv] [files...]
+    #+end_example
+  - Load to file/SQLite:
+    #+begin_example
+    python -m tools.load_words file   --files in1.tsv [in2.tsv ...] --out data/word-index.tsv
+    python -m tools.load_words sqlite --files in1.tsv                --db_path data/words.db
+    #+end_example
+  - Export dataset:
+    #+begin_example
+    python -m tools.export_dataset --profile P [--base_dir DIR] [--out path.tsv]
+    #+end_example
+  - Train tokenizer:
+    #+begin_example
+    python -m tools.train_tokenizer --profile P [--base-dir DIR] [--dataset path] [--epochs ...]
+    #+end_example
+  - Trie build/query:
+    #+begin_example
+    python -m tools.trie_word_indexer --profile P [--build] [--parallel] [--overwrite] [--min_glen N] [--max_glen N]
+    #+end_example
+    - Query test: add =--query_prefix=, =--query_suffix= to print matches.
+
+- Migration notes
+  - Scripts and UI now share normalization/filtering logic via =tools.curation_core= to avoid drift.
+  - Replace prior CLI references to =tools.export_batches_dataset= with =tools.export_dataset=.
+  - For SQLite backend, set =STORAGE_BACKEND= to =sqlite= and (optionally) =SQLITE_PATH=; default is filesystem storage.
+
+** Background: original proposal (superseded)
+
+- Create a new module, for example, =tools/common.py= or =tools/utils.py=, that extracts shared helper functions such as:
+  - =openfile()= for opening plain and gzipped files.
+  - Functions for counting words, computing grapheme lengths (using =ari.length()=), and merging word frequency data.
+  - Query parameter normalization and filtering routines (functions currently in =curation_core.py=).
+
+- Create a new module, for example, =tools/common.py= or =tools/utils.py=, that extracts shared helper functions such as:
+  - =openfile()= for opening plain and gzipped files.
+  - Functions for counting words, computing grapheme lengths (using =ari.length()=), and merging word frequency data.
+  - Query parameter normalization and filtering routines (functions currently in =curation_core.py=).
+
+- Refactor =tools/build_word_index.py= and =tools/load_words.py=:
+  - Instead of each script including its own logic for reading word files and aggregating counts, both should import the common functions from the new shared module.
+  - =build_word_index.py= should become a thin wrapper that either prints the TSV or calls the common aggregator.
+  - =load_words.py= should reuse that aggregator and then decide whether to output to file or write to the SQLite database.
+
+- Unify query processing:
+  - Several parts of the project (the FastAPI backend in =webui1/app.py= and the Qt GUI in =tools/gui_qt_app.py=) use virtually the same functions from =curation_core.py= for parsing length specifications, filtering words, and mixing curated results.
+  - Consider moving these functions into =tools/common.py= so that both the backend and GUI consistently import and use the same logic. This will ensure that any improvements benefit both interfaces.
+
+- Unify word indexing approaches:
+  - The project currently supports both a list‑based index (=tools/word_indexer.py=) and a trie‑based index (=tools/trie_word_indexer.py=). Although they serve different performance needs, you can define a common interface such as =query_words(prefix, suffix, ...)= on a unified index interface.
+  - If feasible, implement an abstract base class for word indexes. Both the list and trie implementations can derive from it, and the calling code (in the backend or GUI) can select the desired implementation without duplicating query logic.
+
+- Storage abstraction:
+  - The module =tools/storage.py= already provides a unified interface for batch writes, ledger updates, and reminders. Ensure that all parts of the project (backend, GUI, and even potentially the load words script) refer only to =StorageBase= and its implementations rather than duplicating file I/O logic. This minimizes divergence when modifying storage behavior.
+
+- Remove outdated or redundant scripts:
+  - If both =build_word_index.py= and =load_words.py= use the same word parsing logic after refactoring, consider merging them or clearly documenting when each should be used. One option is to provide a command‑line flag (e.g. =--mode=) within a single script to either output a TSV to stdout or load the index into a database.
+  - Evaluate whether both the list‑based and trie‑based indexers are necessary. If the trie implementation is now mature and meets performance goals, you might consider deprecating the list‑based index in favor of a single unified solution (or making the choice explicit via configuration).
+
+- Documentation update:
+  - Revise documentation to explain the unified interfaces and any new command‑line flags.
+  - Update developer guides to show where common functionality now resides, which should make maintenance easier.

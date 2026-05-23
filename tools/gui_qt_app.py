@@ -35,7 +35,7 @@ from tools.curation_core import (
     load_reminders as cc_load_reminders,
     write_reminders as cc_write_reminders,
 )
-from tools.storage import FileStorage, SqliteStorage
+from tools.storage import FileStorage, SqliteStorage, PostgresStorage
 from tools.curation_index import CuratedIndexDB
 
 CURATED_INDEX_CACHE = {}
@@ -574,8 +574,6 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Indexer Benchmark", "\n".join(msg_lines))
 
 
-    def update_ledger(self, tsv_lines, batch_name):
-        cc_append_ledger(LEDGER_PATH, batch_name, tsv_lines)
 
     def _compute_summary_snapshot(self):
         # Use precomputed maps; avoid scanning the full word list on every save.
@@ -595,24 +593,11 @@ class MainWindow(QMainWindow):
         }
 
     def append_summary_ledger(self, batch_name):
-        import os, fcntl, time, json
         summary = self._compute_summary_snapshot()
-        ledger_path = LEDGER_PATH
-        os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
-        write_header = not os.path.exists(ledger_path) or os.path.getsize(ledger_path) == 0
-        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        with open(ledger_path, "a", encoding="utf-8") as lf:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-            try:
-                if write_header:
-                    lf.write("\t".join(["timestamp", "batch", "id", "word", "splits", "notes"]) + "\n")
-                rec_id = "__SUMMARY__"
-                word = str(summary["total_words"])
-                splits = ""
-                notes = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
-                lf.write(f"{ts}\t{batch_name}\t{rec_id}\t{word}\t{splits}\t{notes}\n")
-            finally:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+        try:
+            self.storage.append_summary(batch_name, summary)
+        except Exception as e:
+            logging.error("append_summary via storage failed: %s", e)
 
 
 
@@ -784,10 +769,16 @@ class MainWindow(QMainWindow):
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
     def load_reminders(self):
-        self.reminders = set(cc_load_reminders(REMINDERS_PATH))
+        try:
+            self.reminders = set(self.storage.load_reminders())
+        except Exception:
+            self.reminders = set()
 
     def _write_reminders_file(self):
-        cc_write_reminders(REMINDERS_PATH, self.reminders)
+        try:
+            self.storage.write_reminders(self.reminders)
+        except Exception as e:
+            logging.error("Failed to write reminders via storage: %s", e)
 
     def add_to_reminders(self, words):
         """Add given words to reminders, persist, and log."""
@@ -978,7 +969,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Find/Replace", f"Replacement applied to {count_replaced} cell(s).")
         else:
             QMessageBox.information(self, "Find/Replace", "No replacements were made (find text not found).")
-    
+
     def apply_replace_to_cell(self):
         find_text, normalized_replace, indexes = self._prepare_replace_inputs()
         if not find_text:
@@ -1497,7 +1488,7 @@ if __name__ == "__main__":
     import argparse, os
     from tools.profile import default_profile, Profile
     parser = argparse.ArgumentParser(description="Tamil Splits GUI Client")
-    parser.add_argument("--storage", choices=["fs","sqlite"], default="fs", help="Storage backend for batches/ledger/reminders")
+    parser.add_argument("--storage", choices=["fs","sqlite","postgres"], default="fs", help="Storage backend for batches/ledger/reminders")
     parser.add_argument("--sqlite_path", default=None, help="Path to sqlite db (default: <profile-dir>/curation.db)")
     parser.add_argument("--profile", default="default", help="Profile name")
     parser.add_argument("--base_dir", default=None, help="Optional base directory")
@@ -1517,7 +1508,13 @@ if __name__ == "__main__":
     # Unified storage abstraction: instantiate the storage backend based on the command-line argument.
     if args.storage == "sqlite":
         SQLITE_PATH = args.sqlite_path or os.path.join(os.path.dirname(WORDLIST_PATH), "curation.db")
-        storage = SqliteStorage(SQLITE_PATH)
+        storage = SqliteStorage(SQLITE_PATH, profile=profile.name)
+        curated = CuratedIndexDB(storage)
+    elif args.storage == "postgres":
+        dsn = args.pg_dsn or os.environ.get("POSTGRES_DSN", "")
+        if not dsn:
+            raise SystemExit("Postgres storage selected but no DSN provided. Use --pg_dsn or set POSTGRES_DSN.")
+        storage = PostgresStorage(dsn, profile=profile.name)
         curated = CuratedIndexDB(storage)
     else:
         storage = FileStorage(BATCHES_DIR, LEDGER_PATH, REMINDERS_PATH)

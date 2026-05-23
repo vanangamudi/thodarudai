@@ -1,3 +1,64 @@
+* 2026-05-23 Unification and script consolidation
+
+- Shared helpers
+  - Added =tools/common.py= with =openfile()= and =count_words()= to remove duplicated parsing/aggregation.
+
+- Word index build/load
+  - Refactored tools/build_word_index.py to wrap tools.common.count_words and emit a canonical TSV (word, freq, glen).
+  - Refactored tools/load_words.py to reuse count_words and support:
+    - file mode: write TSV to a path,
+    - sqlite mode: upsert into table words(word PRIMARY KEY, freq, glen).
+
+- Dataset export and tokenizer integration
+  - New =tools/export_dataset.py= wraps =tools.export_batches_dataset.export_dataset()= and is now the documented entry point.
+  - Updated =tools/train_tokenizer.py= hint to point to ~python -m tools.export_dataset~.
+
+- Backend consolidation (FastAPI, webui1/app.py)
+  - Centralized normalization/filtering to =tools.curation_core=.
+  - Added =/api/generate_batch_name= using =default_batch_name=.
+  - Abstracted storage via tools.storage (FileStorage, SqliteStorage); select via STORAGE_BACKEND and SQLITE_PATH.
+
+- Curated index
+  - tools.curation_index.{CuratedIndex, CuratedIndexDB} power both file and DB modes; both support incremental update_from_batch.
+
+- Word indexers
+  - Kept list-based WordIndex as default; introduced trie-based tools.trie_word_indexer with forward/reverse OnDiskTrie and a CLI to build/query; Qt GUI can compare/switch.
+
+- Storage fixes
+  - =tools/storage.py=: removed duplicate =append_summary()= in =SqliteStorage=; kept a single DB-backed =append_summary()=.
+
+- How to run (recap)
+  - Build TSV:
+    #+begin_example
+    python -m tools.build_word_index [--out out.tsv] [files...]
+    #+end_example
+  - Load to file/SQLite:
+    #+begin_example
+    python -m tools.load_words file|sqlite ...
+    #+end_example
+  - Export dataset:
+    #+begin_example
+    python -m tools.export_dataset --profile default
+    #+end_example
+  - Train tokenizer:
+    #+begin_example
+    python -m tools.train_tokenizer --profile default ...
+    #+end_example
+  - Backend:
+    #+begin_example
+    python webui1/app.py
+    #+end_example
+    or:
+    #+begin_example
+    uvicorn webui1.app:app --host 127.0.0.1 --port 8000 --reload
+    #+end_example
+  - Frontend:
+    #+begin_example
+    cd webui1/frontend
+    npm install
+    npm run dev
+    #+end_example
+
 * 2026-05-20 Web UI parity with Qt app; logging, theming, shortcuts, and storage paths
 
 - Backend (FastAPI, webui1/app.py)

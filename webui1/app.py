@@ -3,11 +3,21 @@ from fastapi import FastAPI, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import os, time, logging, math, random, json
-from tools.storage import FileStorage, SqliteStorage
+from tools.profile import Profile
+from tools.storage import FileStorage, SqliteStorage, PostgresStorage
 from tools.curation_index import CuratedIndexDB
 import re
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("webui")
+
+def render_results_html(results):
+    html = []
+    html.append("<table border='1'>")
+    html.append("<tr><th>Word</th><th>Freq</th><th>Glen</th></tr>")
+    for rec in results:
+        html.append(f"<tr><td>{rec[0]}</td><td>{rec[1]}</td><td>{rec[2]}</td></tr>")
+    html.append("</table>")
+    return "\n".join(html)
 STARTUP_TS = int(time.time())
 BUILD_TAG = time.strftime("%Y%m%dT%H%M%S", time.localtime(STARTUP_TS))
 from fastapi.concurrency import run_in_threadpool
@@ -15,27 +25,26 @@ from tools.word_indexer import WordIndex
 from tools.curation_index import CuratedIndex
 from tools.curation_core import (
     normalize_query_fields, run_query,
-    parse_length_spec, compile_neg_regex,  # kept if you still use them elsewhere
+    parse_length_spec, compile_neg_regex,
     filter_eligible as core_filter_eligible,
     partition_new_old as core_partition_new_old,
     mix_curated as core_mix_curated,
-    sanitize_component, default_batch_name,
+    default_batch_name,
     build_tsv_lines as core_build_tsv_lines,
-    write_batch_file as core_write_batch_file,
-    append_ledger as core_append_ledger,
-    load_reminders as core_load_reminders,
-    write_reminders as core_write_reminders,
     compute_summary_data as core_compute_summary_data,
 )
 # (This entire duplicate import block has been removed.)
 
-# Configuration constants (reuse file paths from existing code)
-WORDLIST_PATH = os.path.abspath("data/word-index.tsv")
-BATCHES_DIR = os.path.abspath("data/batches")
-LEDGER_PATH = os.path.abspath("data/splits-ledger.tsv")
-REMINDERS_PATH = os.path.abspath("data/reminders.tsv")
+PROFILE_NAME = os.environ.get("PROFILE", "default")
+BASE_DIR = os.environ.get("BASE_DIR", None)
+PROF = Profile(name=PROFILE_NAME, base_dir=BASE_DIR)
+WORDLIST_PATH = os.path.abspath(PROF.wordlist_path)
+BATCHES_DIR = os.path.abspath(PROF.batches_dir)
+LEDGER_PATH = os.path.abspath(PROF.ledger_path)
+REMINDERS_PATH = os.path.abspath(PROF.reminders_path)
 STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "fs")  # 'fs' or 'sqlite'
 SQLITE_PATH = os.environ.get("SQLITE_PATH", os.path.abspath("data/curation.db"))
+POSTGRES_DSN = os.environ.get("POSTGRES_DSN", "")
 # Unified storage abstraction: instantiate the storage backend below based on STORAGE_BACKEND
 STORAGE = None
 
@@ -46,15 +55,20 @@ CURATED = None
 def initialize_services():
     global WORD_INDEX, CURATED, STORAGE
     WORD_INDEX = WordIndex(WORDLIST_PATH)
-    if STORAGE_BACKEND.lower() == "sqlite":
-        STORAGE = SqliteStorage(SQLITE_PATH)
+    sb = STORAGE_BACKEND.lower()
+    if sb == "sqlite":
+        STORAGE = SqliteStorage(SQLITE_PATH, profile=PROFILE_NAME)
+        CURATED = CuratedIndexDB(STORAGE)
+    elif sb == "postgres":
+        if not POSTGRES_DSN:
+            raise RuntimeError("POSTGRES_DSN is required when STORAGE_BACKEND=postgres")
+        STORAGE = PostgresStorage(POSTGRES_DSN, profile=PROFILE_NAME)
         CURATED = CuratedIndexDB(STORAGE)
     else:
         STORAGE = FileStorage(BATCHES_DIR, LEDGER_PATH, REMINDERS_PATH)
         CURATED = CuratedIndex(BATCHES_DIR)
     CURATED.reload()
-    logging.info("Initialized WORD_INDEX (%d words), CURATED (%d), storage=%s",
-                 len(WORD_INDEX.words), CURATED.curated_count, STORAGE_BACKEND)
+    logging.info("Initialized WORD_INDEX (%d words), CURATED (%d), storage=%s", len(WORD_INDEX.words), CURATED.curated_count, STORAGE_BACKEND)
 app = FastAPI(title="Tamil Splits Web UI")
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -192,7 +206,13 @@ def health():
             "startup_ts": STARTUP_TS,
             "now": int(time.time()),
             "storage_backend": STORAGE_BACKEND,
-            "storage_path": SQLITE_PATH if STORAGE_BACKEND.lower() == "sqlite" else {"batches": BATCHES_DIR, "ledger": LEDGER_PATH, "reminders": REMINDERS_PATH},
+            "storage_path": (
+                SQLITE_PATH if STORAGE_BACKEND.lower() == "sqlite"
+                else ({"dsn": POSTGRES_DSN.replace("://", "://***:***@") if "://" in POSTGRES_DSN else POSTGRES_DSN.replace("password=", "password=***")} if STORAGE_BACKEND.lower() == "postgres"
+                      else {"batches": BATCHES_DIR, "ledger": LEDGER_PATH, "reminders": REMINDERS_PATH})
+            ),
+            "profile": PROFILE_NAME,
+            "base_dir": PROF.base_dir,
         }
     except Exception as e:
         logger.exception("Health check failed")
