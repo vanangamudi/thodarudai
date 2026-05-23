@@ -35,6 +35,8 @@ from tools.curation_core import (
     load_reminders as cc_load_reminders,
     write_reminders as cc_write_reminders,
 )
+from tools.storage import FileStorage, SqliteStorage
+from tools.curation_index import CuratedIndexDB
 
 CURATED_INDEX_CACHE = {}
 def get_shared_curated_index(batches_dir):
@@ -372,8 +374,9 @@ class MainWindow(QMainWindow):
         else:
             self.word_index = get_shared_word_index(self.wordlist_path)
             self.indexer_kind = "list"
-        self.curated = get_shared_curated_index(self.batch_dir)
-        logging.info("Curated index (from batches) loaded: %d word(s)", self.curated.curated_count)
+        if not self.curated:
+            self.curated = get_shared_curated_index(self.batch_dir)
+        logging.info("Curated index loaded: %d word(s)", self.curated.curated_count)
 
     def _init_shortcuts(self):
         from PyQt5.QtGui import QKeySequence
@@ -392,11 +395,13 @@ class MainWindow(QMainWindow):
         MyShortcut(QKeySequence("Ctrl+Shift+N"), self, activated=self.open_new_window_from_selection)
         self.child_windows = []
 
-    def __init__(self, ui_scale=1.5, font_size=None):
+    def __init__(self, ui_scale=1.5, font_size=None, storage=None, curated=None):
         super().__init__()
         self.ui_scale = float(ui_scale) if ui_scale else 1.0
         self.font_size = int(font_size) if font_size else max(14, int(round(15 * self.ui_scale)))
         self._apply_global_styles()
+        self.storage = storage
+        self.curated = curated
         self._init_paths_and_indexes()
         self.setWindowTitle("Tamil Splits - Qt Client")
         central = QWidget()
@@ -639,8 +644,9 @@ class MainWindow(QMainWindow):
 
     def _write_batch_file(self, batch_name, edited_rows):
         tsv_lines = cc_build_tsv_lines(edited_rows)
-        filepath = cc_write_batch_file(self.batch_dir, batch_name, tsv_lines)
-        return filepath, tsv_lines
+        path = self.storage.write_batch(edited_rows, batch_name)
+        self.storage.append_ledger(tsv_lines, batch_name)
+        return path, tsv_lines
 
     def _refresh_curated_and_broadcast(self, tsv_lines):
         """Update curated index from batch (incremental). No auto-refresh; use Summary Refresh."""
@@ -677,7 +683,6 @@ class MainWindow(QMainWindow):
         batch_name = self.generate_batch_name()
         try:
             filepath, tsv_lines = self._write_batch_file(batch_name, edited_rows)
-            self.update_ledger(tsv_lines, batch_name)
             self._refresh_curated_and_broadcast(tsv_lines)
             self.append_summary_ledger(batch_name)
             self.log_ui_event("COMMIT", {"batch": batch_name, "saved_rows": len(edited_rows)})
@@ -1338,7 +1343,7 @@ class MainWindow(QMainWindow):
     def open_new_window_with_current_query(self):
         """Spawn a new window, clone current query params, run, and show."""
         params = self._collect_query_params()
-        win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size)
+        win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size, storage=self.storage, curated=self.curated)
         win._apply_query_params(params)
         win.query_words()
         self.child_windows.append(win)
@@ -1387,7 +1392,7 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         params = self._apply_choice_to_params(choice, text, self._collect_query_params())
-        win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size)
+        win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size, storage=self.storage, curated=self.curated)
         win._apply_query_params(params)
         win.query_words()
         self.child_windows.append(win)
@@ -1409,7 +1414,7 @@ class MainWindow(QMainWindow):
             params["suffix_not"] = text
         elif kind == "not regex":
             params["regex_not"] = text
-        win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size)
+        win = MainWindow(ui_scale=self.ui_scale, font_size=self.font_size, storage=self.storage, curated=self.curated)
         win._apply_query_params(params)
         win.query_words()
         self.child_windows.append(win)
@@ -1492,6 +1497,8 @@ if __name__ == "__main__":
     import argparse, os
     from tools.profile import default_profile, Profile
     parser = argparse.ArgumentParser(description="Tamil Splits GUI Client")
+    parser.add_argument("--storage", choices=["fs","sqlite"], default="fs", help="Storage backend for batches/ledger/reminders")
+    parser.add_argument("--sqlite_path", default=None, help="Path to sqlite db (default: <profile-dir>/curation.db)")
     parser.add_argument("--profile", default="default", help="Profile name")
     parser.add_argument("--base_dir", default=None, help="Optional base directory")
     parser.add_argument("--ui_scale", type=float, default=1.0, help="UI scale multiplier for fonts and sizes (e.g., 1.25)")
@@ -1507,6 +1514,15 @@ if __name__ == "__main__":
     BATCHES_DIR = os.path.abspath(profile.batches_dir)
     UI_LOG_PATH = os.path.abspath(profile.ui_log_path)
     REMINDERS_PATH = os.path.abspath(profile.reminders_path)
+    # Unified storage abstraction: instantiate the storage backend based on the command-line argument.
+    if args.storage == "sqlite":
+        SQLITE_PATH = args.sqlite_path or os.path.join(os.path.dirname(WORDLIST_PATH), "curation.db")
+        storage = SqliteStorage(SQLITE_PATH)
+        curated = CuratedIndexDB(storage)
+    else:
+        storage = FileStorage(BATCHES_DIR, LEDGER_PATH, REMINDERS_PATH)
+        curated = CuratedIndex(BATCHES_DIR)
+    curated.reload()
     # Indexer selection globals
     INDEXER_KIND = args.indexer
     if INDEXER_KIND == "trie":
@@ -1523,7 +1539,7 @@ if __name__ == "__main__":
         f = app.font()
         f.setPointSize(int(args.font_size))
         app.setFont(f)
-    window = MainWindow(ui_scale=args.ui_scale, font_size=args.font_size)
+    window = MainWindow(ui_scale=args.ui_scale, font_size=args.font_size, storage=storage, curated=curated)
     window.resize(1024, 600)
     window.show()
     sys.exit(app.exec_())

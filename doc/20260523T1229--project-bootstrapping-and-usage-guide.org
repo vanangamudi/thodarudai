@@ -1,0 +1,155 @@
+* Project Bootstrapping and Usage Guide
+
+This document explains how to bootstrap the indexes and run the Tamil Splits tool using the Qt GUI and the Web UI. This guide is intended for newcomers and assumes a basic familiarity with running Python scripts and building front-end assets using npm.
+
+* Prerequisites
+
+Before starting, ensure that:
+
+- Python 3 is installed.
+- Required Python packages for our tools are installed (see the project's requirements).
+- For the Web UI front-end, npm and node are installed.
+- The directory structure is bootstrapped using the =Profile= settings. By default, the profile "default" will create a directory (often under the current working directory) containing:
+  - =word-index.tsv=
+  - =ledger.tsv=
+  - =batches/=
+  - =reminders.tsv=
+  - Other necessary files
+
+* Bootstrapping the Indexes
+
+The indexes serve as the backbone for fast word lookups. There are two main approaches:
+
+1. List-based word index
+2. Trie-based word index (for faster prefix and suffix queries)
+
+** Build the Word Index TSV
+
+To generate the main =word-index.tsv= file from one or more input word files, run:
+
+   =python tools/build_word_index.py [files...] [--out output_file] [--profile profile_name] [--base_dir base_directory]=
+
+If no input files are specified, the tool uses the default profile's word list specified in the profile.
+
+** Building Trie-Based Indexes
+
+If you choose to use the trie-based indexing approach, you need to build two trie files:
+- A forward trie (usually =fwd.trie=)
+- A reverse trie (usually =rev.trie=)
+
+To build these, run the trie indexer with the =--build= option. For example:
+
+   =python tools/trie_word_indexer.py --build --profile default --base_dir data=
+
+This command uses =data/word-index.tsv= as the input (via the default profile "default") and creates (or overwrites if specified) the trie files in the same directory as the word-index.
+For advanced usage, you can override the paths by using the =--wordlist=, =--fwd=, and =--rev= options.
+
+* Loading Words into a Database
+
+This project now offers a dedicated script called =tools/load_words.py= that can load a word index into either a file‑based TSV or a SQLite database. This approach facilitates future enhancements such as heuristic word loading.
+
+** Script Overview
+
+The load words script reads one or more word files (or uses the default profile word list if none are provided), accumulates word frequencies, computes each word’s grapheme length using ~arichuvadi.length()~, and creates a collection of records in the form (word, frequency, glen).
+
+The script supports two modes:
+- =file= mode writes the records to a TSV file.
+- =sqlite= mode loads the records into a SQLite database where the words are stored in a table with columns for word, frequency, and grapheme length.
+
+** Running the Script in SQLite Mode
+
+To load the words into a SQLite database:
+1. Open a terminal.
+2. Run the following command:
+   =python tools/load_words.py sqlite --files input1.tsv --db_path data/words.db=
+
+This command does the following:
+- Reads the input files (here, =input1.tsv=). If no files are provided, the script uses the default word index from your profile.
+- Updates word frequency counts.
+- Computes the grapheme length for each word.
+- Connects to (or creates) a SQLite database at =data/words.db=.
+- Creates a table called =words= if it does not exist.
+- Inserts each word record into the table. If a word already exists, its frequency and grapheme length are updated using SQLite's =ON CONFLICT= clause.
+
+** Configuration and Concurrency
+
+When using SQLite mode, the script automatically sets:
+- =PRAGMA journal_mode=WAL= to allow concurrent reads.
+- =PRAGMA synchronous=NORMAL= to strike a balance between performance and durability.
+- =PRAGMA busy_timeout=30000= to wait up to 30 seconds if the database is busy.
+
+This ensures that multiple processes (or user interfaces) can read from the database while writes are serialized.
+
+** Additional Files
+
+For a complete workflow, the following files are also relevant:
+- =tools/profile.py= defines the default profile and file paths used by the script.
+- =tools/build_word_index.py= shows similar functionality for building a word index TSV file.
+- =tools/storage.py= contains the storage abstraction used elsewhere in the project.
+
+* Running the Tools
+
+There are two main user interfaces: the Web UI and the Qt GUI. Both work with either file-based storage or SQLite storage (configured via environment variables or command-line options).
+
+** Using the Web UI
+
+The Web UI is composed of a backend API (built with FastAPI) and a front-end application (built using React and bundled via Vite).
+
+*** Starting the Backend
+
+To run the backend, execute:
+
+   =python webui1/app.py=
+
+This will start a FastAPI server on port 8000. The backend reads the word-index and ledger files (or a SQLite database if configured) and exposes endpoints for word query, commit, summary, and reminders.
+
+*** Building and Running the Front-End
+
+Change directory into the front-end folder:
+
+   =cd webui1/frontend=
+
+Install the dependencies:
+
+   =npm install=
+
+Then start the development server:
+
+   =npm run dev=
+
+The front-end, which by default runs on port 5173, communicates with the backend over HTTP. In production, adjust the allowed origins in the backend's CORS settings.
+
+** Using the Qt GUI
+
+The Qt GUI is a standalone desktop application. It uses PyQt5 to provide an interface with a real-time transliteration editor and a table of query results.
+
+To run the Qt GUI, execute:
+
+   =python tools/gui_qt_app.py=
+
+The application will read the profile\'s files (such as =word-index.tsv=, =ledger.tsv=, etc.) from the default directory (or the directory specified in the profile).
+You can also choose between file-based storage and SQLite storage via the command-line options:
+   - Use =--storage fs= for file-based storage (the default).
+   - Use =--storage sqlite= and also specify =--sqlite_path= if needed.
+
+The GUI supports launching new windows with cloned query parameters, modifying splits for words, and committing edits that update the ledger and curated index.
+
+* Environment Configuration
+
+The tools use a unified storage abstraction defined in =tools/storage.py=.
+The storage backend is chosen based on the environment variable =STORAGE_BACKEND=. Its value can be:
+   - =fs= for file-based storage.
+   - =sqlite= for using a SQLite database.
+
+Also, override paths such as =SQLITE_PATH= by setting the corresponding environment variable.
+Profiles (see =tools/profile.py=) control where files are located, so beginners may start with the default profile "default".
+
+* Summary
+
+- First, generate the word index using =tools/build_word_index.py=.
+- Next, choose your indexing method:
+  - For faster prefix/suffix search performance, build trie indexes using =tools/trie_word_indexer.py--build=.
+  - Otherwise, the list-based index is loaded automatically.
+- Run the backend with =python webui1/app.py= and the front-end with npm commands from =webui1/frontend=.
+- Alternatively, run =python tools/gui_qt_app.py= for a Qt-based desktop experience.
+- Both interfaces share the same underlying storage and indexes and can work concurrently provided storage is configured correctly.

@@ -1,0 +1,98 @@
+* Overall Project Architecture
+
+The project provides support for managing a Tamil word index, curation (curated batches) and transliteration. It offers two interfaces for end users: a Web UI (with a FastAPI backend and React front‑end) and a desktop Qt GUI application. Most scripts provide utilities for processing, storing, or querying the word index and related data.
+
+* tools/build_word_index.py
+This script reads one or more word files (plain text or gzipped) and aggregates word frequencies. It also calculates each word’s grapheme length (using the =arichuvadi.length()= function) and produces a TSV file (typically =word-index.tsv=).
+** Functionality overlap
+It shares the basic word count logic with =tools/load_words.py=.
+
+* tools/load_words.py
+A dedicated script that loads a word index into persistent storage. It offers two modes:
+ - =file= mode: writes the aggregated words (with frequency and glen) into a TSV file.
+ - =sqlite= mode: writes the aggregated words into a SQLite database (creating/updating a table named =words=).
+** Overlap
+Much of the logic for reading the input files (and computing frequencies and glen) is similar to =build_word_index.py=. This redundancy suggests that common helper functions might be refactored into a shared module.
+
+* tools/storage.py
+Defines a unified storage abstraction (the interface =StorageBase=) that is used to persist batches, ledger updates, reminders, and summary records.
+It provides two implementations:
+ - =FileStorage= for file‑based storage (using TSV files).
+ - =SqliteStorage= for SQLite‑backed storage.
+This abstraction allows both the Web UI backend and the Qt GUI to work with the same persistent data without needing to change code across the interfaces.
+
+* tools/profile.py
+Provides a =Profile= class that defines the directory structure and file paths for a given profile (default is "default").
+This file centralizes configuration for file locations (e.g. word-index, ledger, batches, reminders, datasets) across the project.
+
+* tools/curation_core.py
+Implements helper functions for processing query parameters and data. These include:
+ - Parsing length specifications
+ - Sanitizing strings for file names
+ - Filtering words based on prefix, suffix, regex (and their negative patterns)
+ - Combining and mixing curated (previously approved) and new words
+ - Building TSV lines and writing batch files
+There is some overlap with logic in the GUI and backend scripts for query processing and summary computation.
+
+* tools/curation_index.py
+Builds a curated index (of approved or curated words) using a Bloom filter approach. It scans the ledger batches to determine which words have been curated.
+There are two variants:
+ - A file‑based version (CuratedIndex) that reads from the batches directory.
+ - A database‑backed version (CuratedIndexDB) that uses a storage backend (SQLite).
+This module is used by both the backend and the Qt GUI to adjust query results according to past curations.
+
+* tools/word_indexer.py
+Implements a list‑based word index that loads the word-index TSV file into memory, building various indices (alphabetical, by reversal, and by grapheme length) to support fast queries (prefix, suffix, regex).
+Its functions are used by the Web UI backend for query processing.
+
+* tools/trie_word_indexer.py
+Provides an alternative, trie‑backed word indexing system.
+ - Uses the =OnDiskTrie= from the =chorkilai.trie= package to build two tries: one for forward (normal) word sequences and one for reversed sequences.
+ - Supports extremely fast prefix and suffix lookups.
+This script has similar goals to =word_indexer.py= but uses a different data structure. Overlap exists in query functionality; the selection of indexer is controlled (in the Qt GUI and optionally the backend).
+
+* tools/tamil_phonetic.py
+Contains logic for transliterating romanized Tamil input into Tamil script.
+ - It maps standalone vowels, assigns diacritics to vowels following a consonant, and uses a pulli (halant) for pure consonants.
+ - Used in the Qt GUI for on‑the‑fly transliteration and by parts of the front‑end if needed.
+
+* tools/export_batches_dataset.py
+Scans the curated batch files (TSV files) and builds an aggregated dataset TSV file.
+ - The output (typically a file named like =tokenizer-<timestamp>.tsv=) is intended for training a tokenizer model.
+ - This script shows how curated data can be combined into a training dataset.
+
+* tools/train_tokenizer.py
+A PyTorch‑based script to train a tokenizer (or sequence-to‑sequence model) using the exported dataset.
+ - It builds vocabularies from a TSV dataset
+ - Trains an encoder/decoder network and provides evaluation/inference functions
+This script is the main machine learning component that uses the curated and exported data to train a model.
+
+* webui1/app.py
+Implements the FastAPI backend that serves API endpoints for the Web UI.
+ - Provides endpoints for querying the word index (with filters and curated mixing), committing edits (which updates ledger files and curated index), and retrieving summaries and reminders.
+ - Loads the word‑index via =tools/word_indexer.py= and the curated index via =tools/curation_index.py=.
+ - Utilizes the unified storage abstraction to manage persistence (either using file‑based or SQLite‑based storage).
+
+* webui1/frontend/
+Contains the React front‑end application that interacts with the backend API.
+ - =package.json=, =vite.config.js=, and =package-lock.json= manage the front‑end dependencies and build configuration.
+ - =src/api.js= defines functions to call the backend endpoints.
+ - =src/App.jsx= is the top‑level component, while other components (like =FiltersPanel.jsx=, =OptionsPanel.jsx=, =FindReplacePanel.jsx=, =ResultsTable.jsx=, =SummaryPanel.jsx=, and =FooterInfo.jsx=) compose the query interface.
+ - The front‑end enables users to enter queries, view results, perform find‑and‑replace actions on splits, and commit curated edits.
+
+* tools/gui_qt_app.py
+Provides the Qt‑based desktop client.
+ - Implements a transliterating text editor (via =PhoneticLineEdit=), a results table with in‑cell editing (using =TableCellLineEdit= and =TableEditDelegate=), and a summary panel.
+ - Integrates with the list‑ or trie‑based word index for query processing.
+ - Uses the unified storage abstraction for writing batches, updating ledger files, and managing reminders.
+ - Also supports opening new windows with specific query parameters, offering a flexible multi‑window workflow.
+
+* Redundancy and Refactoring Opportunities
+
+Several scripts share overlapping functionality:
+ - =tools/build_word_index.py= and =tools/load_words.py= both read word files, compute frequency and grapheme length information. Their common code (e.g. the =openfile()= function, word counting, =ari.length()= calls) can be refactored into a shared module.
+ - Query processing and filtering functions in =tools/curation_core.py= are used by both the backend =app.py= and the Qt GUI. It may be beneficial to further centralize these utilities.
+ - Both word indexers (=word_indexer.py= and =trie_word_indexer.py=) provide query capabilities. Although they serve different performance goals, their interfaces could be unified so that the rest of the system interacts with a common index API.
+ - Storage operations across the backend and the GUI (accessing ledger, batch, and reminder files) always use the abstraction from =tools/storage.py=. Ensuring that other parts of the code delegate to that module will reduce duplication.
+
+Reviewing these overlaps will give an opportunity to consolidate common code into fewer modules and simplify future maintenance.

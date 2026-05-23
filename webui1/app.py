@@ -3,6 +3,8 @@ from fastapi import FastAPI, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import os, time, logging, math, random, json
+from tools.storage import FileStorage, SqliteStorage
+from tools.curation_index import CuratedIndexDB
 import re
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("webui")
@@ -32,6 +34,10 @@ WORDLIST_PATH = os.path.abspath("data/word-index.tsv")
 BATCHES_DIR = os.path.abspath("data/batches")
 LEDGER_PATH = os.path.abspath("data/splits-ledger.tsv")
 REMINDERS_PATH = os.path.abspath("data/reminders.tsv")
+STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "fs")  # 'fs' or 'sqlite'
+SQLITE_PATH = os.environ.get("SQLITE_PATH", os.path.abspath("data/curation.db"))
+# Unified storage abstraction: instantiate the storage backend below based on STORAGE_BACKEND
+STORAGE = None
 
 # Global singleton storage (simple, single user)
 WORD_INDEX = None
@@ -209,12 +215,17 @@ def compute_summary_data() -> Dict[str, Any]:
     }
 
 def initialize_services():
-    global WORD_INDEX, CURATED
+    global WORD_INDEX, CURATED, STORAGE
     WORD_INDEX = WordIndex(WORDLIST_PATH)
-    CURATED = CuratedIndex(BATCHES_DIR)
+    if STORAGE_BACKEND.lower() == "sqlite":
+        STORAGE = SqliteStorage(SQLITE_PATH)
+        CURATED = CuratedIndexDB(STORAGE)
+    else:
+        STORAGE = FileStorage(BATCHES_DIR, LEDGER_PATH, REMINDERS_PATH)
+        CURATED = CuratedIndex(BATCHES_DIR)
     CURATED.reload()
-    logging.info("Initialized WORD_INDEX (%d words) and CURATED (%d curated)",
-                 len(WORD_INDEX.words), CURATED.curated_count)
+    logging.info("Initialized WORD_INDEX (%d words), CURATED (%d), storage=%s",
+                 len(WORD_INDEX.words), CURATED.curated_count, STORAGE_BACKEND)
 app = FastAPI(title="Tamil Splits Web UI")
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -293,7 +304,7 @@ def get_ui():
 def get_reminders():
     logger.info("REMINDERS get")
     try:
-        return {"words": sorted(core_load_reminders(REMINDERS_PATH))}
+        return {"words": sorted(STORAGE.load_reminders())}
     except Exception as e:
         logging.exception("Error in reminders get")
         raise HTTPException(status_code=500, detail=str(e))
@@ -302,21 +313,17 @@ from fastapi import Body
 @app.post("/api/reminders")
 def update_reminders(action: str = Form(...), words_json: str = Form("[]")):
     logger.info("REMINDERS update action=%s", action)
-    """
-    action: 'add' or 'remove'
-    words_json: JSON-serialized list of words
-    """
     import json
     try:
         words = set(json.loads(words_json) or [])
-        current = core_load_reminders(REMINDERS_PATH)
+        current = STORAGE.load_reminders()
         if action == "add":
             current |= words
         elif action == "remove":
             current -= words
         else:
             raise HTTPException(status_code=400, detail="invalid action")
-        core_write_reminders(REMINDERS_PATH, current)
+        STORAGE.write_reminders(current)
         return {"status": "ok", "count": len(current)}
     except Exception as e:
         logging.exception("Error in reminders update")
@@ -326,7 +333,7 @@ def update_reminders(action: str = Form(...), words_json: str = Form("[]")):
 def get_reminder_results():
     logger.info("REMINDERS results")
     try:
-        rem = core_load_reminders(REMINDERS_PATH)
+        rem = STORAGE.load_reminders()
         words_map = {w: (w, fr, gl) for (w, fr, gl) in WORD_INDEX.words}
         results = [words_map[w] for w in sorted(rem) if w in words_map]
         return {"results": results}
@@ -355,6 +362,8 @@ def health():
             "curated_count": int(getattr(CURATED, "curated_count", 0) or 0),
             "startup_ts": STARTUP_TS,
             "now": int(time.time()),
+            "storage_backend": STORAGE_BACKEND,
+            "storage_path": SQLITE_PATH if STORAGE_BACKEND.lower() == "sqlite" else {"batches": BATCHES_DIR, "ledger": LEDGER_PATH, "reminders": REMINDERS_PATH},
         }
     except Exception as e:
         logger.exception("Health check failed")
@@ -401,8 +410,12 @@ def commit_edits(edited_rows: str = Form(...), batch: str = Form("")):
     try:
         batch_name = batch if batch else f"{time.strftime('%Y%m%dT%H%M%S')}-batch.tsv"
         tsv_lines = core_build_tsv_lines(rows)
-        batch_path = core_write_batch_file(BATCHES_DIR, batch_name, tsv_lines)
-        ledger_abs = core_append_ledger(LEDGER_PATH, batch_name, tsv_lines)
+        batch_path = STORAGE.write_batch(rows, batch_name)
+        ledger_abs = STORAGE.append_ledger(tsv_lines, batch_name)
+        if hasattr(CURATED, "update_from_batch"):
+            CURATED.update_from_batch(tsv_lines)
+        else:
+            CURATED.maybe_reload_on_change()
         logger.info("COMMIT done rows=%d batch=%s wrote_batch=%s wrote_ledger=%s",
                     len(rows), batch_name, batch_path, ledger_abs)
         return {"status": "committed",
