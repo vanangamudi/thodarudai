@@ -2,6 +2,8 @@
 Bloom filter and curated-word index built from the ledger.
 """
 import os, math, hashlib, time
+import logging
+logger = logging.getLogger("curation_index")
 
 class BloomFilter:
     def __init__(self, capacity, error_rate=0.01):
@@ -46,14 +48,17 @@ class CuratedIndex:
         self.curated_words = set()
         self.curation_counts = {}
         self.total_curation_entries = 0
+        logger.info("CuratedIndex(fs): dir=%s err=%.3g", self.batches_dir, self.error_rate)
 
 
 
 
     def maybe_reload_on_change(self):
         try:
+            logger.debug("CuratedIndex.fs: maybe_reload_on_change scan dir=%s", self.batches_dir)
             latest = 0.0
             if not os.path.isdir(self.batches_dir):
+                logger.debug("CuratedIndex.fs: batches dir does not exist: %s", self.batches_dir)
                 return
             for name in os.listdir(self.batches_dir):
                 if not name.lower().endswith(".tsv"):
@@ -66,11 +71,16 @@ class CuratedIndex:
                 except OSError:
                     continue
             if latest > self._last_mtime:
+                logger.info("CuratedIndex.fs: change detected mtime_old=%.0f mtime_new=%.0f -> reload",
+                            self._last_mtime, latest)
                 self.reload()
-        except Exception:
-            pass
+            else:
+                logger.debug("CuratedIndex.fs: no change (latest<=last_mtime)")
+        except Exception as e:
+            logger.warning("CuratedIndex.fs: maybe_reload_on_change failed: %s", e)
 
     def update_from_batch(self, tsv_lines):
+        logger.debug("CuratedIndex.fs: update_from_batch start")
         header = tsv_lines[0].strip().split("\t")
         idx = {h: i for i, h in enumerate(header)}
         if not {"word", "splits"}.issubset(idx):
@@ -90,13 +100,20 @@ class CuratedIndex:
         self.curated_count += added
         self._last_mtime = time.time()
         self.total_curation_entries += added
+        if added > 0:
+            logger.info("CuratedIndex.fs: update_from_batch added=%d curated_distinct=%d total_entries=%d",
+                        added, len(self.curated_words), self.total_curation_entries)
+        else:
+            logger.info("CuratedIndex.fs: update_from_batch added=0 (no-op)")
 
 class CuratedIndexDB(CuratedIndex):
     def __init__(self, storage, error_rate=0.01):
         super().__init__(batches_dir="", error_rate=error_rate)
         self.storage = storage
+        logger.info("CuratedIndexDB: storage=%s err=%.3g", type(self.storage).__name__, self.error_rate)
 
     def reload(self):
+        logger.info("CuratedIndexDB.reload: fetching curated sets")
         try:
             words, counts = self.storage.get_curated_sets()
             cap = max(1000, int(len(words) * 1.3) or 1)
@@ -108,7 +125,11 @@ class CuratedIndexDB(CuratedIndex):
             self.curated_words = set(words)
             self.curation_counts = dict(counts)
             self.total_curation_entries = sum(counts.values())
-        except Exception:
+            logger.info("CuratedIndexDB.reload: curated_distinct=%d total_entries=%d bloom_bits=%d k=%d",
+                        len(words), sum(counts.values()), self.bloom.m, self.bloom.k)
+            return
+        except Exception as e:
+            logger.warning("CuratedIndexDB.reload failed: %s", e)
             self.bloom = BloomFilter(1, error_rate=self.error_rate)
             self.curated_count = 0
             self._last_mtime = 0.0

@@ -95,11 +95,22 @@ def _seed_db_words_if_empty(storage, wordlist_path):
 
 def initialize_services():
     global WORD_INDEX, CURATED, STORAGE
-    WORD_INDEX = _init_word_index(WORDLIST_PATH)
     STORAGE, CURATED = _init_storage_and_curated()
     CURATED.reload()
-    _seed_db_words_if_empty(STORAGE, WORDLIST_PATH)
-    logging.info("Initialized WORD_INDEX (%d words), CURATED (%d), storage=%s", len(WORD_INDEX.words), CURATED.curated_count, STORAGE_BACKEND)
+    if STORAGE_BACKEND.lower() in ("sqlite", "postgres"):
+        WORD_INDEX = None
+        _seed_db_words_if_empty(STORAGE, WORDLIST_PATH)
+        try:
+            words_count = int(STORAGE.summary().get("total_words", 0)) if hasattr(STORAGE, "summary") else 0
+        except Exception:
+            words_count = 0
+    else:
+        WORD_INDEX = _init_word_index(WORDLIST_PATH)
+        words_count = len(WORD_INDEX.words)
+    logging.info(
+        "Initialized WORD_INDEX (%d), CURATED (%d), storage=%s",
+        words_count, CURATED.curated_count, STORAGE_BACKEND
+    )
 def _build_tsv_min(rows):
     return core_build_tsv_lines(rows)
 
@@ -244,16 +255,38 @@ def get_reminders():
 @app.post("/api/commit")
 def api_commit(edited_rows: str = Form(...), batch: str = Form(None)):
     try:
+        import json
         rows = json.loads(edited_rows) or []
+        logger.info("API /api/commit rows=%d batch=%s", len(rows), batch or "(auto)")
         if not isinstance(rows, list):
             raise HTTPException(status_code=400, detail="edited_rows must be a JSON list")
-        # Build TSV lines for ledger append and curated fast-path update
         tsv_lines = _build_tsv_min(rows)
         batch_name = batch or default_batch_name("", "", "8-")
-        # For now, always go through storage’s write_batch + append_ledger (works for fs/sqlite/postgres)
+        if STORAGE_BACKEND.lower() in ("sqlite", "postgres"):
+            # DB mode: write to segmentations table, and append a ledger event
+            batch_path, _lp_placeholder, saved = _commit_db_rows(rows, batch_name, tsv_lines)
+            try:
+                ledger_path = STORAGE.append_ledger(tsv_lines, batch_name)
+            except Exception as e:
+                logger.warning("API /api/commit: DB append_ledger failed: %s", e)
+                ledger_path = f"{STORAGE_BACKEND}://ledger#{batch_name}"
+            if saved == 0:
+                logger.info("API /api/commit: no segmentations saved (likely no '-' in splits)")
+            _update_curated_after_commit(tsv_lines)
+            logger.info("API /api/commit handled_by=db rows=%d batch=%s", saved, batch_name)
+            return {
+                "status": "ok",
+                "rows": saved,
+                "batch": batch_name,
+                "batch_path": batch_path,
+                "ledger_path": ledger_path
+            }
+        # FS mode
         batch_path = STORAGE.write_batch(rows, batch_name)
         ledger_path = STORAGE.append_ledger(tsv_lines, batch_name)
         _update_curated_after_commit(tsv_lines)
+        logger.info("API /api/commit handled_by=fs rows=%d batch=%s batch_path=%s ledger_path=%s",
+                    len(rows), batch_name, batch_path, ledger_path)
         return {"status": "ok", "rows": len(rows), "batch": batch_name, "batch_path": batch_path, "ledger_path": ledger_path}
     except HTTPException:
         raise
@@ -286,7 +319,23 @@ def get_reminder_results():
     logger.info("REMINDERS results")
     try:
         rem = STORAGE.load_reminders()
-        words_map = {w: (w, fr, gl) for (w, fr, gl) in WORD_INDEX.words}
+        if not rem:
+            return {"results": []}
+        if STORAGE_BACKEND.lower() in ("sqlite", "postgres") and hasattr(STORAGE, "_conn"):
+            words = sorted(rem)
+            with STORAGE._conn() as cx:
+                if STORAGE_BACKEND.lower() == "sqlite":
+                    q = f"SELECT word, freq, glen FROM words WHERE word IN ({','.join(['?']*len(words))})"
+                    rows = cx.execute(q, words).fetchall()
+                else:
+                    with cx.cursor() as cur:
+                        q = f"SELECT word, freq, glen FROM words WHERE word IN ({','.join(['%s']*len(words))})"
+                        cur.execute(q, tuple(words))
+                        rows = cur.fetchall()
+            results = [(w, int(fr), int(gl)) for (w, fr, gl) in rows]
+            return {"results": results}
+        # FS/list fallback
+        words_map = {w: (w, fr, gl) for (w, fr, gl) in (WORD_INDEX.words if WORD_INDEX else [])}
         results = [words_map[w] for w in sorted(rem) if w in words_map]
         return {"results": results}
     except Exception as e:
@@ -316,12 +365,16 @@ def api_query(
     curated_ratio: int = Form(20),
 ):
     try:
+        import json
         fields = normalize_query_fields(prefix, suffix, regex, prefix_not, suffix_not, regex_not, length_spec, limit, curated_ratio)
+        logger.info("API /api/query fields=%s", json.dumps(fields, ensure_ascii=False))
         min_len, max_len = parse_length_spec(fields["length_spec"])
-        if STORAGE_BACKEND.lower() == "sqlite":
+        if STORAGE_BACKEND.lower() in ("sqlite", "postgres"):
             rows, dur_ms = _db_do_query(fields, min_len, max_len)
+            logger.info("API /api/query handled_by=db returned=%d dur_ms=%d", len(rows), dur_ms)
         else:
             rows, dur_ms = _fs_do_query(fields, min_len, max_len)
+            logger.info("API /api/query handled_by=fs returned=%d dur_ms=%d", len(rows), dur_ms)
         return _render_query_result(request, rows, dur_ms)
     except Exception as e:
         logger.exception("Error in /api/query")
@@ -336,7 +389,10 @@ def health():
             "app_file": __file__,
             "app_mtime": int(os.path.getmtime(__file__)),
             "wordlist_path": WORDLIST_PATH,
-            "word_count": len(WORD_INDEX.words) if WORD_INDEX else 0,
+            "word_count": (
+                len(WORD_INDEX.words) if WORD_INDEX
+                else (int(STORAGE.summary().get("total_words", 0)) if hasattr(STORAGE, "summary") else 0)
+            ),
             "curated_count": int(getattr(CURATED, "curated_count", 0) or 0),
             "startup_ts": STARTUP_TS,
             "now": int(time.time()),
@@ -357,11 +413,15 @@ def health():
 @app.get("/api/summary")
 def get_summary():
     try:
+        logger.info("API /api/summary requested")
         if hasattr(STORAGE, "summary"):
-            return STORAGE.summary()
+            s = STORAGE.summary()
+            logger.info("API /api/summary handled_by=storage")
+            return s
+        logger.info("API /api/summary handled_by=fs")
         return core_compute_summary_data(WORD_INDEX, CURATED)
     except Exception as e:
-        logging.exception("Error in summary endpoint")
+        logger.exception("Error in summary endpoint")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

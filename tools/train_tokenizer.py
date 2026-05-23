@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import os, json, time, argparse, random
+import logging
+logger = logging.getLogger("train_tokenizer")
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -104,6 +106,7 @@ def train_loop(model, loader, tgt_pad_idx, epochs=5, lr=1e-3, device="cpu"):
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     crit = nn.CrossEntropyLoss(ignore_index=tgt_pad_idx)
     for ep in range(1, epochs+1):
+        t0 = time.perf_counter()
         model.train()
         total = 0.0; steps = 0
         for src, src_lens, tgt, tgt_lens in loader:
@@ -113,9 +116,13 @@ def train_loop(model, loader, tgt_pad_idx, epochs=5, lr=1e-3, device="cpu"):
             loss = crit(logits.reshape(-1, logits.size(-1)), gold.reshape(-1))
             opt.zero_grad(); loss.backward(); opt.step()
             total += loss.item(); steps += 1
-        print(f"epoch {ep} loss {total/max(1,steps):.4f}")
+        avg = total / max(1, steps)
+        dur_ms = int((time.perf_counter() - t0) * 1000)
+        print(f"epoch {ep} loss {avg:.4f}")
+        logger.info("epoch=%d loss=%.4f dur_ms=%d steps=%d", ep, avg, dur_ms, steps)
 
 def save_model(out_dir, model, cfg, vocabs):
+    logger.info("saving model to %s", out_dir)
     os.makedirs(out_dir, exist_ok=True)
     torch.save(model.state_dict(), os.path.join(out_dir, "model.pt"))
     with open(os.path.join(out_dir, "config.json"), "w", encoding="utf-8") as f:
@@ -152,6 +159,7 @@ def greedy_decode(model, src_batch, src_lens, bos_idx, eos_idx, max_len):
     return res
 
 def run_infer(words, model, cfg, src2i, tgt2i, i2tgt, device="cpu", max_len=None, batch_size=256):
+    logger.info("infer: words=%d batch_size=%d device=%s", len(words), batch_size, device)
     model.eval()
     delim = cfg.get("token_delim", "-")
     bos_idx = tgt2i[BOS]; eos_idx = tgt2i[EOS]
@@ -174,6 +182,7 @@ def run_infer(words, model, cfg, src2i, tgt2i, i2tgt, device="cpu", max_len=None
     return out
 
 def evaluate(dataset_path, model, cfg, src2i, tgt2i, i2tgt, device="cpu", max_len=None):
+    logger.info("evaluate: dataset=%s", dataset_path)
     pairs = []
     with open(dataset_path, "r", encoding="utf-8") as f:
         hdr = f.readline().strip().split("\t")
@@ -190,6 +199,7 @@ def evaluate(dataset_path, model, cfg, src2i, tgt2i, i2tgt, device="cpu", max_le
     hit = sum(1 for w,g in pairs if preds.get(w, "") == g)
     acc = hit / max(1, len(pairs))
     print(f"Eval: {hit}/{len(pairs)} = {acc:.4f} exact-match accuracy")
+    logger.info("evaluate: exact_match=%d/%d acc=%.4f", hit, len(pairs), acc)
     return acc
 
 def load_model(model_dir, device="cpu"):
@@ -208,17 +218,23 @@ def load_model(model_dir, device="cpu"):
     return model, cfg, src2i, tgt2i, i2tgt
 
 def choose_dataset(prof, ds_path):
+    logger.debug("choose_dataset: requested=%s", ds_path)
     if ds_path:
+        logger.info("choose_dataset: using %s", ds_path)
         return ds_path
     try:
         cands = [p for p in os.listdir(prof.datasets_dir) if p.startswith("tokenizer-") and p.endswith(".tsv")]
         if not cands:
             raise SystemExit("No dataset found. Run: python -m tools.export_dataset --profile ...")
-        return os.path.join(prof.datasets_dir, sorted(cands)[-1])
+        chosen = os.path.join(prof.datasets_dir, sorted(cands)[-1])
+        logger.info("choose_dataset: using %s", chosen)
+        return chosen
     except FileNotFoundError:
+        logger.error("choose_dataset: datasets dir not found under %s", prof.datasets_dir)
         raise SystemExit("No dataset dir found. Run exporter first.")
 
 def prepare_vocabs_and_loader(pairs, args):
+    logger.info("prepare_vocabs: token_delim=%s", args.token_delim)
     src2i, i2src, tgt2i, i2tgt = build_vocabs(pairs, token_delim=args.token_delim)
     if PAD in src2i and src2i[PAD] != 0:
         def remap(v):
@@ -236,9 +252,12 @@ def prepare_vocabs_and_loader(pairs, args):
         tgt2i, i2tgt = remap(tgt2i)
     ds = TokDataset(pairs, src2i, tgt2i, token_delim=args.token_delim)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate)
+    logger.info("vocabs: src=%d tgt=%d batch_size=%d", len(src2i), len(tgt2i), args.batch_size)
     return (src2i, i2src, tgt2i, i2tgt), loader
 
 def train_and_save(prof, args, vocabs, loader):
+    logger.info("train: emb=%d hidden=%d layers=%d lr=%g epochs=%d batch=%d device=%s",
+                args.emb, args.hidden, args.layers, args.lr, args.epochs, args.batch_size, args.device)
     src2i, i2src, tgt2i, i2tgt = vocabs
     enc = Encoder(vocab_size=len(src2i), emb_dim=args.emb, hid=args.hidden, layers=args.layers)
     dec = Decoder(vocab_size=len(tgt2i), emb_dim=args.emb, hid=args.hidden, layers=args.layers)
@@ -254,9 +273,12 @@ def train_and_save(prof, args, vocabs, loader):
     voc = {"src2i": src2i, "i2src": i2src, "tgt2i": tgt2i, "i2tgt": i2tgt, "special": {"PAD": PAD, "BOS": BOS, "EOS": EOS}}
     save_model(out_dir, model, cfg, voc)
     print(f"Saved model to {out_dir}")
+    logger.info("saved_dir=%s", out_dir)
     return out_dir, model, cfg, (src2i, i2src, tgt2i, i2tgt)
 
 def maybe_run_eval_and_infer(args, model, cfg, src2i, i2tgt, tgt2i):
+    logger.info("post_train: eval_dataset=%s infer_words=%d infer_file=%s infer_out=%s",
+                args.eval_dataset, len(args.infer_words or []), bool(args.infer_file), args.infer_out or "")
     if args.eval_dataset:
         evaluate(args.eval_dataset, model, cfg, src2i, tgt2i, i2tgt, device=args.device, max_len=args.max_decode_len)
     words = []
@@ -306,6 +328,8 @@ def build_arg_parser():
 def main():
     ap = build_arg_parser()
     args = ap.parse_args()
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 
     prof = Profile(name=args.profile, base_dir=args.base_dir)
 
@@ -313,16 +337,21 @@ def main():
         if not args.model_dir:
             raise SystemExit("--no_train requires --model_dir to load a saved model")
         model, cfg, src2i, tgt2i, i2tgt = load_model(args.model_dir, device=args.device)
+        logger.info("load model only: dir=%s", args.model_dir)
         maybe_run_eval_and_infer(args, model, cfg, src2i, i2tgt, tgt2i)
         return
 
     ds_path = choose_dataset(prof, args.dataset)
+    logger.info("using dataset: %s", ds_path)
     print(f"Using dataset: {ds_path}")
     pairs = load_dataset(ds_path)
     if not pairs:
         raise SystemExit("Dataset is empty")
+    logger.info("loaded pairs: %d", len(pairs))
     vocabs, loader = prepare_vocabs_and_loader(pairs, args)
     out_dir, model, cfg, (src2i, i2src, tgt2i, i2tgt) = train_and_save(prof, args, vocabs, loader)
+    logger.info("model saved: %s (emb=%d hidden=%d layers=%d epochs=%d batch=%d)",
+                out_dir, args.emb, args.hidden, args.layers, args.epochs, args.batch_size)
     cfg["dataset"] = os.path.abspath(ds_path)
     maybe_run_eval_and_infer(args, model, cfg, src2i, i2tgt, tgt2i)
 

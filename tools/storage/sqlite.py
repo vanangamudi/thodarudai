@@ -1,5 +1,7 @@
 from __future__ import annotations
 import os, sqlite3, time, re
+import logging
+logger = logging.getLogger("storage.sqlite")
 from typing import List, Tuple, Dict, Iterable, Optional, Set, Any
 from . import StorageBase, Row
 
@@ -7,6 +9,7 @@ class SqliteStorage(StorageBase):
     def __init__(self, db_path: str, profile: str = "default"):
         self.db_path = os.path.abspath(db_path)
         self.profile = profile
+        logger.info("SqliteStorage: db=%s profile=%s", self.db_path, self.profile)
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init()
 
@@ -61,6 +64,7 @@ class SqliteStorage(StorageBase):
                 cx.execute("CREATE INDEX IF NOT EXISTS seg_profile_word ON segmentations(profile, word)")
             except Exception:
                 pass
+            logger.info("SqliteStorage: initialized schema and pragmas")
 
     def write_batch(self, edited_rows: List[Row], batch_name: str) -> str:
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -160,13 +164,14 @@ class SqliteStorage(StorageBase):
             for gl, c, r in rows:
                 curated[int(gl)] = int(c)
                 remaining[int(gl)] = int(r)
-            return {
-                "total_words": total_words,
-                "curated_distinct": curated_distinct,
-                "remaining_distinct": max(0, total_words - curated_distinct),
-                "curation_entries": curated_entries,
-                "length_distribution": {"curated": curated, "remaining": remaining},
-            }
+        res = {
+            "total_words": total_words,
+            "curated_distinct": curated_distinct,
+            "remaining_distinct": max(0, total_words - curated_distinct),
+            "curation_entries": curated_entries,
+            "length_distribution": {"curated": curated, "remaining": remaining},
+        }
+        return res
     def append_summary(self, batch_name: str, summary: Dict[str, Any]) -> str:
         import json as _json
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -189,6 +194,7 @@ class SqliteStorage(StorageBase):
 
     def ensure_words(self, records: Iterable[Tuple[str, int, int]]) -> None:
         recs = list(records or [])
+        logger.info("ensure_words: records=%d", len(recs))
         if not recs:
             return
         with self._conn() as cx:
@@ -197,6 +203,58 @@ class SqliteStorage(StorageBase):
                 "INSERT INTO words(word,freq,glen) VALUES (?,?,?) ON CONFLICT(word) DO UPDATE SET freq=excluded.freq, glen=excluded.glen",
                 recs
             )
+
+    def add_segmentation(self, word: str, left_text: str, right_text: str, split_pos: int, notes: str = "") -> None:
+        with self._conn() as cx:
+            cx.execute(
+                "INSERT INTO segmentations(word,profile,split_pos,left_text,right_text,notes) VALUES(?,?,?,?,?,?)",
+                (word, self.profile, int(split_pos), left_text, right_text, notes)
+            )
+
+    def commit_segmentations(self, rows: Iterable[Tuple[str, str, str, int, str]], batch_name: str) -> int:
+        """
+        rows: iterable of (word, left_text, right_text, split_pos, notes)
+        """
+        seg_rows = [(word, self.profile, int(split_pos), left_text, right_text, notes or "")
+                    for (word, left_text, right_text, split_pos, notes) in (rows or [])]
+        if not seg_rows:
+            return 0
+        with self._conn() as cx:
+            cx.executemany(
+                "INSERT INTO segmentations(word,profile,split_pos,left_text,right_text,notes) VALUES(?,?,?,?,?,?)",
+                seg_rows
+            )
+        return len(seg_rows)
+
+    def list_segmentations(self, word: str, scope: Optional[str] = None) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        with self._conn() as cx:
+            if scope == "me":
+                cur = cx.execute(
+                    "SELECT profile,split_pos,left_text,right_text,notes,created_at FROM segmentations WHERE word=? AND profile=? ORDER BY created_at DESC,id DESC",
+                    (word, self.profile)
+                )
+            elif scope and scope.startswith("actor:"):
+                who = scope.split(":", 1)[1]
+                cur = cx.execute(
+                    "SELECT profile,split_pos,left_text,right_text,notes,created_at FROM segmentations WHERE word=? AND profile=? ORDER BY created_at DESC,id DESC",
+                    (word, who)
+                )
+            else:
+                cur = cx.execute(
+                    "SELECT profile,split_pos,left_text,right_text,notes,created_at FROM segmentations WHERE word=? ORDER BY created_at DESC,id DESC",
+                    (word,)
+                )
+            for pr, sp, lt, rt, no, ct in cur.fetchall():
+                rows.append({
+                    "profile": pr,
+                    "split_pos": int(sp),
+                    "left_text": lt,
+                    "right_text": rt,
+                    "notes": no or "",
+                    "created_at": str(ct),
+                })
+        return rows
 
     def has_words(self) -> bool:
         with self._conn() as cx:
@@ -212,6 +270,8 @@ class SqliteStorage(StorageBase):
     def query_index(self, prefix: str, suffix: str, regex: str,
                     prefix_not: str, suffix_not: str, regex_not: str,
                     min_len: int, max_len, limit: int, curated_ratio: int) -> list:
+        import time
+        t0 = time.perf_counter()
         where = ["glen >= ?"]
         params = [int(min_len)]
         if max_len is not None:
@@ -235,6 +295,11 @@ class SqliteStorage(StorageBase):
             LIMIT ?
         """
         params.append(int(limit) if limit is not None else 1000)
+        logger.info("query_index: prefix=%r suffix=%r regex=%r min_len=%s max_len=%s limit=%s",
+                    prefix, suffix, regex, min_len, max_len, limit)
         with self._conn() as cx:
             cur = cx.execute(sql, params)
-            return [(row[0], int(row[1]), int(row[2])) for row in cur.fetchall()]
+            rows = [(row[0], int(row[1]), int(row[2])) for row in cur.fetchall()]
+        dur_ms = int((time.perf_counter() - t0) * 1000)
+        logger.info("query_index: returned=%d dur_ms=%d", len(rows), dur_ms)
+        return rows

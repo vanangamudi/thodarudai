@@ -9,10 +9,14 @@ import os
 import re
 from bisect import bisect_left, bisect_right
 import heapq
+import logging
+import time
+logger = logging.getLogger("word_indexer")
 
 class WordIndex:
     def __init__(self, wordlist_path):
         self.wordlist_path = wordlist_path
+        logger.info("WordIndex: init path=%s", self.wordlist_path)
         self.words = []          # list of tuples: (word, freq, glen)
         self._load_wordlist()
         self._build_indices()
@@ -22,8 +26,11 @@ class WordIndex:
         if not pattern:
             return None
         try:
-            return re.compile(pattern)
-        except re.error:
+            rx = re.compile(pattern)
+            logger.debug("WordIndex: compiled regex ok pattern=%r", pattern)
+            return rx
+        except re.error as e:
+            logger.warning("WordIndex: invalid regex pattern=%r err=%s", pattern, e)
             return None
 
     def _select_candidates(self, prefix, suffix, min_len, max_len):
@@ -72,8 +79,9 @@ class WordIndex:
         return filtered
 
     def _load_wordlist(self):
+        t0 = time.perf_counter()
         words = []
-        print('loading word list...')
+        logger.info("WordIndex: loading word list from %s", self.wordlist_path)
         with open(self.wordlist_path, "r", encoding="utf-8") as f:
             # Read the header line which we assume is "word\tfreq\tglen"
             header = f.readline().strip().split("\t")
@@ -92,9 +100,11 @@ class WordIndex:
         self.words = words
         # Sort in descending order by glen, then freq, then ascending word.
         self.words.sort(key=lambda x: (-x[2], -x[1], x[0]))
-        print('loading word list... DONE')
+        dur_ms = int((time.perf_counter() - t0) * 1000)
+        logger.info("WordIndex: loaded %d words in %d ms", len(self.words), dur_ms)
 
     def _build_indices(self):
+        t0 = time.perf_counter()
         # Alphabetical index for fast prefix range scans
         self.by_word = sorted(self.words, key=lambda x: x[0])
         self._words_only = [w for (w, _, _) in self.by_word]
@@ -118,6 +128,9 @@ class WordIndex:
         # Precompute word -> glen and the set of words for O(1) access in summaries
         self.glen_map = {w: gl for (w, _, gl) in self.words}
         self.index_words = set(self.glen_map.keys())
+        dur_ms = int((time.perf_counter() - t0) * 1000)
+        logger.info("WordIndex: indices built in %d ms (by_word=%d, by_rev=%d, len_counts=%d distinct)",
+                    dur_ms, len(self.by_word), len(self.by_rev), len(self.len_counts))
     
     def _prefix_bounds(self, prefix):
         lo = bisect_left(self._words_only, prefix)
@@ -166,6 +179,14 @@ class WordIndex:
 
     def query_words(self, prefix="", suffix="", min_len=1, max_len=None, limit=200, offset=0, exclude_fn=None, regex=""):
         compiled_rx = self._compile_regex(regex)
+        t0 = time.perf_counter()
         candidates = self._select_candidates(prefix, suffix, min_len, max_len)
+        cand_n = len(candidates) if isinstance(candidates, list) else len(self.words)
         filtered = self._filter_candidates(candidates, prefix, suffix, compiled_rx, min_len, max_len, exclude_fn)
-        return self._finalize_results(filtered, offset, limit)
+        rows = self._finalize_results(filtered, offset, limit)
+        dur_ms = int((time.perf_counter() - t0) * 1000)
+        logger.info(
+            "WordIndex.query prefix=%r suffix=%r regex=%r min_len=%s max_len=%s limit=%s cand=%d out=%d dur_ms=%d",
+            prefix, suffix, (regex or ""), min_len, max_len, limit, cand_n, len(rows), dur_ms
+        )
+        return rows

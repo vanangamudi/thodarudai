@@ -659,6 +659,31 @@ class MainWindow(QMainWindow):
         remaining_set = index_words - curated_in_index
         return glen_map, index_words, curated_in_index, remaining_set
 
+    def _compute_summary_snapshot(self) -> dict:
+        # Prefer DB-backed summary when available
+        if getattr(self, "indexer_kind", "list") == "db" and hasattr(self.storage, "summary"):
+            try:
+                return self.storage.summary()
+            except Exception as e:
+                logging.warning("DB summary failed for snapshot, falling back: %s", e)
+        # Fallback: compute from local index and curated sets
+        glen_map, index_words, curated_in_index, remaining_set = self._compute_summary_sets()
+        from collections import Counter
+        curated_len = Counter(glen_map[w] for w in curated_in_index if w in glen_map)
+        remaining_len = Counter(glen_map[w] for w in remaining_set if w in glen_map)
+        lengths = sorted(set(curated_len.keys()) | set(remaining_len.keys()))
+        total_curations = int(getattr(self.curated, "total_curation_entries", 0))
+        return {
+            "total_words": len(index_words),
+            "curated_distinct": len(curated_in_index),
+            "remaining_distinct": len(remaining_set),
+            "curation_entries": total_curations,
+            "length_distribution": {
+                "curated": {gl: curated_len.get(gl, 0) for gl in lengths},
+                "remaining": {gl: remaining_len.get(gl, 0) for gl in lengths},
+            },
+        }
+    
     def append_summary_ledger(self, batch_name):
         summary = self._compute_summary_snapshot()
         try:
@@ -724,6 +749,19 @@ class MainWindow(QMainWindow):
                     self.edited_ids.remove(rid)
         self.dirty = bool(self.edited_ids)
 
+    def _parse_split_for_commit(self, word, splits):
+        if not splits or "-" not in splits:
+            return None
+        left, right = [x.strip() for x in splits.split("-", 1)]
+        if not left or not right:
+            return None
+        try:
+            import arichuvadi as ari
+            sp = int(ari.length(left))
+        except Exception:
+            sp = max(1, len(left))
+        return left, right, sp
+
     def commit_edits(self):
         if not getattr(self, "dirty", False):
             QMessageBox.information(self, "Commit", "No edits since last save.")
@@ -734,12 +772,42 @@ class MainWindow(QMainWindow):
             return
         batch_name = self.generate_batch_name()
         try:
-            filepath, tsv_lines = self._write_batch_file(batch_name, edited_rows)
-            self._refresh_curated_and_broadcast(tsv_lines)
-            self.append_summary_ledger(batch_name)
-            self.log_ui_event("COMMIT", {"batch": batch_name, "saved_rows": len(edited_rows)})
-            logging.info("Saved batch file to %s", filepath)
-            QMessageBox.information(self, "Commit", f"Saved {len(edited_rows)} edited row(s) to {filepath}")
+            if hasattr(self.storage, "add_segmentation"):
+                # DB mode
+                tsv_lines = cc_build_tsv_lines(edited_rows)
+                items = []
+                for rec_id, word, splits, freq, glen, notes in edited_rows:
+                    ps = self._parse_split_for_commit(word, splits)
+                    if not ps:
+                        continue
+                    lt, rt, sp = ps
+                    items.append((word, lt, rt, sp, notes or ""))
+                saved = 0
+                if hasattr(self.storage, "commit_segmentations"):
+                    try:
+                        saved = self.storage.commit_segmentations(items, batch_name)
+                    except Exception as e:
+                        logging.warning("commit_segmentations failed, falling back: %s", e)
+                if saved == 0 and items:
+                    for (word, lt, rt, sp, notes) in items:
+                        self.storage.add_segmentation(word, lt, rt, sp, notes)
+                    saved = len(items)
+                try:
+                    self.storage.append_ledger(tsv_lines, batch_name)
+                except Exception:
+                    pass
+                self._refresh_curated_and_broadcast(tsv_lines)
+                self.append_summary_ledger(batch_name)
+                self.log_ui_event("COMMIT", {"batch": batch_name, "saved_rows": saved, "mode": "db"})
+                QMessageBox.information(self, "Commit", f"Committed {saved} edited row(s) to database")
+            else:
+                # FS mode
+                filepath, tsv_lines = self._write_batch_file(batch_name, edited_rows)
+                self._refresh_curated_and_broadcast(tsv_lines)
+                self.append_summary_ledger(batch_name)
+                self.log_ui_event("COMMIT", {"batch": batch_name, "saved_rows": len(edited_rows), "mode": "fs"})
+                logging.info("Saved batch file to %s", filepath)
+                QMessageBox.information(self, "Commit", f"Saved {len(edited_rows)} edited row(s) to {filepath}")
             self._update_baseline_after_save(edited_rows)
         except Exception as e:
             QMessageBox.critical(self, "Commit Error", str(e))

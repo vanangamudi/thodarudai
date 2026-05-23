@@ -8,6 +8,8 @@ For example purposes only; the mapping should be extended to cover full phonetic
 """
 
 import string
+import logging
+logger = logging.getLogger("tamil_phonetic")
 # Transliteration mappings
 
 # Standalone vowels mapping (for when vowels appear with no preceding consonant)
@@ -146,6 +148,7 @@ def process_vowel(text, i, pending, output):
     vt = match_vowel_at(text, i)
     if vt is None:
         return False, i, pending
+    logger.debug("phonetic: vowel token=%r at i=%d (had_pending=%s)", vt, i, pending is not None)
     pending = flush_pending_with_vowel(output, pending, vt)
     return True, i + len(vt), pending
 
@@ -153,6 +156,7 @@ def process_consonant(text, i, pending, output):
     ct = match_consonant_at(text, i)
     if ct is None:
         return False, i, pending
+    logger.debug("phonetic: consonant token=%r at i=%d (had_pending=%s)", ct, i, pending is not None)
     if pending is not None:
         output.append(pending + PULLI)
     pending = CONSONANTS[ct]
@@ -160,6 +164,7 @@ def process_consonant(text, i, pending, output):
 
 def process_other_char(text, i, pending, output):
     ch = text[i]
+    logger.debug("phonetic: other char=%r at i=%d (whsp/punct=%s had_pending=%s)", ch, i, (ch in string.whitespace or ch in string.punctuation), pending is not None)
     if ch in string.whitespace or ch in string.punctuation:
         pending = flush_pending_pulli(output, pending)
         output.append(ch)
@@ -176,6 +181,7 @@ def transliterate(text):
 diacritics
     to a pending consonant. If no vowel follows a consonant, a pulli is appended.
     """
+    logger.debug("phonetic: transliterate IN=%r", text)
     output = []
     pending = None
     i = 0
@@ -191,7 +197,9 @@ diacritics
         i, pending = process_other_char(text, i, pending, output)
     if pending is not None:
         output.append(pending + PULLI)
-    return ''.join(output)
+    res = ''.join(output)
+    logger.debug("phonetic: transliterate OUT=%r", res)
+    return res
 
 if __name__ == "__main__":
     import sys

@@ -18,18 +18,25 @@ import sys, os, sqlite3, time
 import argparse
 from tools.profile import Profile
 from tools.common import count_words
+import logging
+logger = logging.getLogger("load_words")
 
 # Reuse the openfile helper from build_word_index.py:
 
 # For file-backed output
 def save_words_to_file(records, out_path):
+    t0 = time.perf_counter()
+    logger.info("save_words_to_file: out=%s records=%d", out_path, len(records))
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as out:
         out.write("word\tfreq\tglen\n")
         for rec in records:
             word, freq, glen = rec
             out.write(f"{word}\t{freq}\t{glen}\n")
-    return os.path.abspath(out_path)
+    dur_ms = int((time.perf_counter() - t0) * 1000)
+    abs_path = os.path.abspath(out_path)
+    logger.info("save_words_to_file: wrote=%d dur_ms=%d path=%s", len(records), dur_ms, abs_path)
+    return abs_path
 
 # For SQLite-backed output; we create a table "words" if it does not exist.
 def save_words_to_sqlite(records, db_path):
@@ -38,6 +45,7 @@ def save_words_to_sqlite(records, db_path):
     try:
         cx.execute("PRAGMA journal_mode=WAL")
         cx.execute("PRAGMA synchronous=NORMAL")
+        cx.execute("PRAGMA busy_timeout=30000")  # add this
         cx.execute("""
             CREATE TABLE IF NOT EXISTS words (
                 word TEXT PRIMARY KEY,
@@ -45,13 +53,16 @@ def save_words_to_sqlite(records, db_path):
                 glen INTEGER
             )
         """)
-        # Insert or update records (update frequency if word already exists)
-        for word, freq, glen in records:
-            cx.execute(
-                "INSERT INTO words(word, freq, glen) VALUES (?,?,?) "
-                "ON CONFLICT(word) DO UPDATE SET freq=excluded.freq, glen=excluded.glen",
-                (word, freq, glen)
-            )
+        # Insert or update records in batches (much faster than per-row executes)
+        sql = (
+            "INSERT INTO words(word, freq, glen) VALUES (?,?,?) "
+            "ON CONFLICT(word) DO UPDATE SET freq=excluded.freq, glen=excluded.glen"
+        )
+        CHUNK = 10000
+        cur = cx.cursor()
+        for i in range(0, len(records), CHUNK):
+            batch = records[i:i+CHUNK]
+            cur.executemany(sql, batch)
         cx.commit()
     finally:
         cx.close()
@@ -70,18 +81,29 @@ def build_arg_parser():
 def main():
     ap = build_arg_parser()
     args = ap.parse_args()
-    # Use profile for defaults if no files provided
-    prof = Profile(name=args.profile, base_dir=args.base_dir)
-    file_list = args.files if args.files else [prof.wordlist_path]
-    records = count_words(file_list)
-    if args.mode == "file":
-        out_file = args.out if args.out else os.path.join(os.path.dirname(prof.wordlist_path), "word-index-generated.tsv")
-        path = save_words_to_file(records, out_file)
-        print(f"Saved {len(records)} words to file: {path}")
-    else:
-        db_path = args.db_path if args.db_path else os.path.join(os.path.dirname(prof.wordlist_path), "words.db")
-        path = save_words_to_sqlite(records, db_path)
-        print(f"Loaded {len(records)} words into SQLite db: {path}")
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    try:
+        prof = Profile(name=args.profile, base_dir=args.base_dir)
+        file_list = args.files if args.files else [prof.wordlist_path]
+        logger.info("load_words start: mode=%s profile=%s base_dir=%s files=%d",
+                    args.mode, args.profile, args.base_dir, len(file_list))
+        logger.debug("input files: %s", file_list)
+        t0 = time.perf_counter()
+        records = count_words(file_list)
+        dur_ms = int((time.perf_counter() - t0) * 1000)
+        logger.info("aggregated %d unique words in %d ms", len(records), dur_ms)
+        if args.mode == "file":
+            out_file = args.out if args.out else os.path.join(os.path.dirname(prof.wordlist_path), "word-index-generated.tsv")
+            path = save_words_to_file(records, out_file)
+            print(f"Saved {len(records)} words to file: {path}")
+        else:
+            db_path = args.db_path if args.db_path else os.path.join(os.path.dirname(prof.wordlist_path), "words.db")
+            path = save_words_to_sqlite(records, db_path)
+            print(f"Loaded {len(records)} words into SQLite db: {path}")
+    except Exception:
+        logger.exception("load_words failed")
+        raise SystemExit(1)
 
 if __name__ == "__main__":
     main()

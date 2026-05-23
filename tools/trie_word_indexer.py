@@ -19,6 +19,9 @@ from typing import List, Tuple, Dict, Iterable
 
 import arichuvadi as ari
 from chorkilai.trie import OnDiskTrie
+import logging
+import time
+logger = logging.getLogger("trie_word_indexer")
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 def build_arg_parser():
@@ -92,6 +95,8 @@ class TrieWordIndex:
         # Open existing tries (built via --build)
         self.fwd = OnDiskTrie(fwd_db_path, new=False)
         self.rev = OnDiskTrie(rev_db_path, new=False)
+        logger.info("TrieWordIndex: open fwd=%s rev=%s; meta=%d words",
+                    fwd_db_path, rev_db_path, len(self.meta))
         # Expose metadata to match WordIndex
         self.words = sorted(((w, fr, gl) for w, (fr, gl) in self.meta.items()), key=lambda rec: (-rec[2], -rec[1], rec[0]))
         self.glen_map = {w: gl for w, (_, gl) in self.meta.items()}
@@ -150,8 +155,11 @@ class TrieWordIndex:
         if not pattern:
             return None
         try:
-            return re.compile(pattern)
-        except re.error:
+            rx = re.compile(pattern)
+            logger.debug("TrieWordIndex: compiled regex ok pattern=%r", pattern)
+            return rx
+        except re.error as e:
+            logger.warning("TrieWordIndex: invalid regex pattern=%r err=%s", pattern, e)
             return None
 
     def _build_candidate_set(self, prefix: str, suffix: str):
@@ -168,6 +176,12 @@ class TrieWordIndex:
         if suffix:
             suff = set(self._candidates_suffix(suffix))
             cand_set = suff if cand_set is None else (cand_set & suff)
+        if prefix and suffix and cand_set is not None:
+            logger.debug("TrieWordIndex: candidate set built (both) size=%d", len(cand_set))
+        elif prefix and cand_set is not None:
+            logger.debug("TrieWordIndex: candidate set built (prefix) size=%d", len(cand_set))
+        elif suffix and cand_set is not None:
+            logger.debug("TrieWordIndex: candidate set built (suffix) size=%d", len(cand_set))
         return cand_set
 
     def _iter_candidate_words(self, cand_set):
@@ -220,6 +234,9 @@ class TrieWordIndex:
                     min_len: int = 1, max_len=None,
                     limit: int = 200, offset: int = 0,
                     exclude_fn=None, regex: str = "") -> List[RankRec]:
+        t0 = time.perf_counter()
+        logger.info("TrieWordIndex.query prefix=%r suffix=%r regex=%r min_len=%s max_len=%s limit=%s offset=%s",
+                    prefix, suffix, (regex or ""), min_len, max_len, limit, offset)
         compiled_rx = self._compile_regex(regex)
         cand_set = self._build_candidate_set(prefix, suffix)
         cand_iter = self._iter_candidate_words(cand_set)
@@ -227,9 +244,13 @@ class TrieWordIndex:
         out = self._collect_ranked(cand_iter, prefix, suffix,
                                    compiled_rx, min_len, max_len,
                                    exclude_fn, need)
-        return self._finalize_slice(out, offset, limit)
+        rows = self._finalize_slice(out, offset, limit)
+        dur_ms = int((time.perf_counter() - t0) * 1000)
+        logger.info("TrieWordIndex.query: out=%d dur_ms=%d", len(rows), dur_ms)
+        return rows
 
 def _open_or_reset_tries(fwd_db_path, rev_db_path, overwrite: bool):
+    logger.info("Opening tries fwd=%s rev=%s overwrite=%s", fwd_db_path, rev_db_path, overwrite)
     """Open new or reset tries according to overwrite flag."""
     import os
     fwd = OnDiskTrie(fwd_db_path, new=(overwrite or not os.path.exists(fwd_db_path)))
@@ -257,6 +278,7 @@ def _iter_wordlist_words(wordlist_path, min_glen=None, max_glen=None):
         yield w
 
 def _populate_tries(fwd, rev, wordlist_path, pbar: bool, min_glen=None, max_glen=None, sort_by_word=False):
+    count = 0
     it = _iter_wordlist_words(wordlist_path, min_glen=min_glen, max_glen=max_glen)
     # Optional pre-sort to improve prefix locality (uses memory)
     if sort_by_word:
@@ -276,8 +298,10 @@ def _populate_tries(fwd, rev, wordlist_path, pbar: bool, min_glen=None, max_glen
             continue
         fwd.add(lt)
         rev.add(list(reversed(lt)))
+        count += 1
 
 def _populate_trie(trie, wordlist_path, pbar: bool, min_glen=None, max_glen=None, sort_by_word=False, reverse=False):
+    count = 0
     it = _iter_wordlist_words(wordlist_path, min_glen=min_glen, max_glen=max_glen)
     # Optional pre-sort to improve prefix locality (uses memory)
     if sort_by_word:
@@ -299,6 +323,7 @@ def _populate_trie(trie, wordlist_path, pbar: bool, min_glen=None, max_glen=None
             trie.add(list(reversed(lt)))
         else:
             trie.add(lt)
+        count += 1
 
 def _build_one_trie(args_tuple):
     """
@@ -306,6 +331,8 @@ def _build_one_trie(args_tuple):
     args_tuple: (db_path, overwrite, wordlist_path, pbar, min_glen, max_glen, sort_by_word, reverse)
     """
     (db_path, overwrite, wordlist_path, pbar, min_glen, max_glen, sort_by_word, reverse) = args_tuple
+    t0 = time.perf_counter()
+    logger.info("Building trie db=%s reverse=%s overwrite=%s", db_path, reverse, overwrite)
     trie = OnDiskTrie(db_path, new=(overwrite or not os.path.exists(db_path)))
     # Speed up build: disable per-write flush
     try:
@@ -322,13 +349,17 @@ def _build_one_trie(args_tuple):
                        sort_by_word=sort_by_word, reverse=reverse)
     finally:
         trie.close()
+    dur_ms = int((time.perf_counter() - t0) * 1000)
+    logger.info("Built trie db=%s dur_ms=%d", db_path, dur_ms)
     return db_path
 
 def build_tries(wordlist_path: str, fwd_db_path: str, rev_db_path: str,
                 overwrite: bool = False, pbar: bool = False,
-                min_glen=None, max_glen=None, sort_by_word=False, parallel=False):
+                min_glen=None, max_glen=None, sort_by_word=False, parallel: bool = False):
+    t0 = time.perf_counter()
+    logger.info("build_tries start: fwd=%s rev=%s overwrite=%s parallel=%s",
+                fwd_db_path, rev_db_path, overwrite, parallel)
     if parallel:
-        # Build forward and reverse tries concurrently
         from concurrent.futures import ProcessPoolExecutor, as_completed
         tasks = [
             (fwd_db_path, overwrite, wordlist_path, pbar, min_glen, max_glen, sort_by_word, False),
@@ -345,10 +376,15 @@ def build_tries(wordlist_path: str, fwd_db_path: str, rev_db_path: str,
                             min_glen=min_glen, max_glen=max_glen,
                             sort_by_word=sort_by_word)
         finally:
-            fwd.close(); rev.close()
+            fwd.close()
+            rev.close()
+    dur_ms = int((time.perf_counter() - t0) * 1000)
+    logger.info("build_tries done dur_ms=%d", dur_ms)
 
 def main():
     import os
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
     # Create and parse arguments from our dedicated parser
     ap = build_arg_parser()
     args = ap.parse_args()
@@ -361,6 +397,7 @@ def main():
     rev_path = args.rev or os.path.join(base_dir, "rev.trie")
 
     if args.build:
+        t0_build = time.perf_counter()
         os.makedirs(os.path.dirname(fwd_path), exist_ok=True)
         os.makedirs(os.path.dirname(rev_path), exist_ok=True)
         build_tries(
@@ -369,6 +406,8 @@ def main():
             min_glen=args.min_glen, max_glen=args.max_glen,
             sort_by_word=args.sort_by_word, parallel=args.parallel
         )
+        t_build = int((time.perf_counter() - t0_build) * 1000)
+        logger.info("Trie CLI: build done dur_ms=%d", t_build)
         print(f"Built tries: fwd={fwd_path} rev={rev_path} (wordlist={wl})")
         return
 
@@ -376,9 +415,14 @@ def main():
     print(f"Using fwd_trie={fwd_path}")
     print(f"Using rev_trie={rev_path}")
     idx = TrieWordIndex(wl, fwd_path, rev_path)
+    logger.info("Trie CLI: query prefix=%r suffix=%r min_len=%s max_len=%s limit=%s",
+                args.query_prefix, args.query_suffix, args.min_len, args.max_len, args.limit)
+    t0 = time.perf_counter()
     try:
         rows = idx.query_words(prefix=args.query_prefix, suffix=args.query_suffix,
                                min_len=args.min_len, max_len=args.max_len, limit=args.limit)
+        dur_ms = int((time.perf_counter() - t0) * 1000)
+        logger.info("Trie CLI: query returned=%d dur_ms=%d", len(rows), dur_ms)
         for w, fr, gl in rows:
             print(f"{w}\t{fr}\t{gl}")
     finally:
