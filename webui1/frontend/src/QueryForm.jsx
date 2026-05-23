@@ -189,15 +189,6 @@ const QueryForm = () => {
       <form onSubmit={handleSubmit}>
         <FiltersPanel params={params} setParams={setParams} refs={{ prefixRef, suffixRef, regexRef }} />
         <OptionsPanel params={params} setParams={setParams} onQuery={handleSubmit} onCommit={commitEdits} onSummary={loadSummary} refs={{ lengthRef, limitRef, queryBtnRef }} />
-        <FindReplacePanel
-          findText={findText} setFindText={setFindText}
-          replaceText={replaceText} setReplaceText={setReplaceText}
-          onlySelected={onlySelected} setOnlySelected={setOnlySelected}
-          onApplyReplace={applyReplace}
-          onSelectAll={() => setSelected(new Set(rows.map(r => r.id)))}
-          onClearSelection={() => setSelected(new Set())}
-          refs={{ findRef, replaceRef }}
-        />
       </form>
       {loading ? <p>Loading...</p> :
         <ResultsTable 
@@ -208,6 +199,15 @@ const QueryForm = () => {
           updateRowField={updateRowField} 
         />
       }
+      <FindReplacePanel
+        findText={findText} setFindText={setFindText}
+        replaceText={replaceText} setReplaceText={setReplaceText}
+        onlySelected={onlySelected} setOnlySelected={setOnlySelected}
+        onApplyReplace={applyReplace}
+        onSelectAll={() => setSelected(new Set(rows.map(r => r.id)))}
+        onClearSelection={() => setSelected(new Set())}
+        refs={{ findRef, replaceRef }}
+      />
       <SummaryPanel summary={summary} />
       <FooterInfo uiBuild={UI_BUILD} health={health} />
     </div>

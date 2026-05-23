@@ -168,6 +168,7 @@ label {
 
 .table-wrap {
   overflow: auto;
+  max-height: 60vh;         /* constrain vertical space so body scrolls */
 }
 
 .table {
