@@ -14,45 +14,13 @@ Usage examples:
   $ python tools/load_words.py sqlite --files input1.tsv --db_path data/words.db
 """
 
-import sys, os, gzip, sqlite3, time
-from collections import Counter
+import sys, os, sqlite3, time
 import argparse
 import arichuvadi as ari
 from tools.profile import Profile, default_profile
+from tools.common import count_words
 
 # Reuse the openfile helper from build_word_index.py:
-def openfile(filepath, mode='rt', *args, **kwargs):
-    if filepath.endswith('.gz'):
-        return gzip.open(filepath, mode, *args, **kwargs)
-    else:
-        return open(filepath, mode, *args, **kwargs)
-
-def count_words(filepaths):
-    """Pure function that returns a list of tuples (word, freq, glen) from the given files."""
-    cnt = Counter()
-    # If no files are provided, use the default profile wordlist.
-    if not filepaths:
-        prof = default_profile
-        filepaths = [prof.wordlist_path]
-    for fp in filepaths:
-        with openfile(fp) as f:
-            for i, line in enumerate(f):
-                if i == 0 and line.lower().startswith("word"):
-                    continue
-                cols = line.strip().split("\t")
-                if not cols:
-                    continue
-                word = cols[0]
-                try:
-                    fr = int(cols[1])
-                except Exception:
-                    fr = 1
-                cnt[word] += fr
-    # Build list of records (word, frequency, grapheme length)
-    records = [(w, freq, ari.length(w)) for w, freq in cnt.items()]
-    # Optionally sort by criteria (e.g. descending glen, descending freq, ascending word)
-    records.sort(key=lambda x: (-x[2], -x[1], x[0]))
-    return records
 
 # For file-backed output
 def save_words_to_file(records, out_path):

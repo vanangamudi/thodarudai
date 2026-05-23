@@ -213,7 +213,7 @@ def choose_dataset(prof, ds_path):
     try:
         cands = [p for p in os.listdir(prof.datasets_dir) if p.startswith("tokenizer-") and p.endswith(".tsv")]
         if not cands:
-            raise SystemExit("No dataset found. Run: python -m tools.export_batches_dataset --profile ...")
+            raise SystemExit("No dataset found. Run: python -m tools.export_dataset --profile ...")
         return os.path.join(prof.datasets_dir, sorted(cands)[-1])
     except FileNotFoundError:
         raise SystemExit("No dataset dir found. Run exporter first.")

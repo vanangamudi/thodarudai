@@ -25,42 +25,21 @@ def build_arg_parser():
     ap.add_argument("--base_dir", default=None, help="Base directory for the profile (optional)")
     return ap
 
-def openfile(filepath, mode='rt', *args, **kwargs):
-    if filepath.endswith('.gz'):
-        return gzip.open(filepath, mode, *args, **kwargs)
-    else:
-        return open(filepath, mode, *args, **kwargs)
 
 def main():
-    from collections import Counter
-    import sys
-    import arichuvadi as ari
-    from tools.profile import Profile, default_profile
+    from tools.profile import Profile
+    from tools.common import count_words
     ap = build_arg_parser()
     args = ap.parse_args()
     # Create a profile with given profile name and base_dir.
     prof = Profile(name=args.profile, base_dir=args.base_dir)
     files = args.files if args.files else [prof.wordlist_path]
-    cnt = Counter()
-    for p in files:
-        with openfile(p) as f:
-            for i, line in enumerate(f):
-                # Skip header if the first line starts with "word"
-                if i == 0 and line.startswith("word"):
-                    continue
-                cols = line.strip().split("\t")
-                word = cols[0]
-                try:
-                    fr = int(cols[1])
-                except Exception:
-                    fr = 1
-                cnt[word] += fr
+    records = count_words(files)
 
     out_stream = open(args.out, "w", encoding="utf-8") if args.out else sys.stdout
     print("word\tfreq\tglen", file=out_stream)
-    for w, n in cnt.items():
-        # Use the arichuvadi function to get grapheme length
-        print(f"{w}\t{n}\t{ari.length(w)}", file=out_stream)
+    for w, n, g in records:
+        print(f"{w}\t{n}\t{g}", file=out_stream)
     if args.out:
         out_stream.close()
 

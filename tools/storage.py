@@ -172,24 +172,6 @@ class SqliteStorage(StorageBase):
                 words.add(w); counts[w] = int(n)
             return words, counts
     def append_summary(self, batch_name: str, summary: Dict[str, Any]) -> str:
-        import fcntl, json as _json
-        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        write_header = not os.path.exists(self.ledger_path) or os.path.getsize(self.ledger_path) == 0
-        os.makedirs(os.path.dirname(self.ledger_path), exist_ok=True)
-        with open(self.ledger_path, "a", encoding="utf-8") as lf:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-            try:
-                if write_header:
-                    lf.write("\t".join(["timestamp", "batch", "id", "word", "splits", "notes"]) + "\n")
-                rec_id = "__SUMMARY__"
-                word = str(summary.get("total_words", ""))
-                splits = ""
-                notes = _json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
-                lf.write(f"{ts}\t{batch_name}\t{rec_id}\t{word}\t{splits}\t{notes}\n")
-            finally:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-        return self.ledger_path
-    def append_summary(self, batch_name: str, summary: Dict[str, Any]) -> str:
         import json as _json
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         rec_id = "__SUMMARY__"
