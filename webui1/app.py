@@ -115,11 +115,19 @@ def _build_tsv_min(rows):
     return core_build_tsv_lines(rows)
 
 def _parse_split_for_commit(word, splits):
-    if "-" not in (splits or ""): return None
-    left, right = [x.strip() for x in splits.split("-", 1)]
-    if not left or not right: return None
-    try: sp = int(ari.length(left))
-    except Exception: sp = max(1, len(left))
+    if not splits:
+        return None
+    # Accept ASCII hyphen and common Unicode dashes (‐‑‒–—, and minus sign)
+    parts = re.split(r"\s*[-\u2010-\u2015\u2212]\s*", splits, maxsplit=1)
+    if len(parts) != 2:
+        return None
+    left, right = [x.strip() for x in parts]
+    if not left or not right:
+        return None
+    try:
+        sp = int(ari.length(left))
+    except Exception:
+        sp = max(1, len(left))
     return left, right, sp
 
 def _db_do_query(fields, min_len, max_len):
@@ -152,12 +160,25 @@ def _render_query_result(request, rows, dur_ms):
     return {"results": rows, "elapsed_ms": dur_ms}
 
 def _commit_db_rows(rows, batch_name, tsv_lines):
-    saved = 0
+    # Build valid segmentation tuples
+    items = []
     for rec in rows:
         rec_id, word, splits, freq, glen, notes = (rec + ["", "", "", ""])[:6]
         ps = _parse_split_for_commit(word, splits)
-        if not ps: continue
-        lt, rt, sp = ps; STORAGE.add_segmentation(word, lt, rt, sp, notes or ""); saved += 1
+        if not ps:
+            continue
+        lt, rt, sp = ps
+        items.append((word, lt, rt, sp, notes or ""))
+    saved = 0
+    if hasattr(STORAGE, "commit_segmentations"):
+        try:
+            saved = STORAGE.commit_segmentations(items, batch_name)
+        except Exception as e:
+            logger.warning("commit_segmentations failed, falling back to per-row: %s", e)
+    if saved == 0 and items:
+        for (word, lt, rt, sp, notes) in items:
+            STORAGE.add_segmentation(word, lt, rt, sp, notes)
+        saved = len(items)
     return f"{STORAGE_BACKEND}://segmentations#{batch_name}", f"{STORAGE_BACKEND}://ledger#{batch_name}", saved
 
 def _commit_fs_rows(rows, batch_name, tsv_lines):
@@ -281,7 +302,7 @@ def api_commit(edited_rows: str = Form(...), batch: str = Form(None)):
                 "batch_path": batch_path,
                 "ledger_path": ledger_path
             }
-        # FS mode
+        # FS mode: write TSV batch + append ledger file
         batch_path = STORAGE.write_batch(rows, batch_name)
         ledger_path = STORAGE.append_ledger(tsv_lines, batch_name)
         _update_curated_after_commit(tsv_lines)

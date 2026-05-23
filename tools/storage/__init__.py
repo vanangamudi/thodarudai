@@ -37,3 +37,10 @@ class StorageBase:
         raise NotImplementedError
     def list_segmentations(self, word: str, scope: Optional[str] = None) -> List[Dict[str, Any]]:
         raise NotImplementedError
+
+    def commit_segmentations(self, rows: Iterable[Tuple[str, str, str, int, str]], batch_name: str) -> int:
+        """Commit multiple segmentation records atomically.
+        Each row is a tuple: (word, left_text, right_text, split_pos, notes).
+        In DB mode, the segmentations table is the source of truth.
+        """
+        raise NotImplementedError

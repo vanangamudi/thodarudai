@@ -210,6 +210,43 @@ def compute_summary_data(word_index, curated_index) -> Dict[str, Any]:
     logger.info("compute_summary_data: words=%d curated=%d remaining=%d entries=%d dur_ms=%d",
                 res["total_words"], res["curated_distinct"], res["remaining_distinct"], res["curation_entries"], dur_ms)
     return res
+
+def add_segmentation(self, word: str, left_text: str, right_text: str, split_pos: int, notes: str = "") -> None:
+    with self._conn() as cx:
+        cx.execute(
+            "INSERT INTO segmentations(word,profile,split_pos,left_text,right_text,notes) VALUES(?,?,?,?,?,?)",
+            (word, self.profile, int(split_pos), left_text, right_text, notes)
+        )
+
+def list_segmentations(self, word: str, scope: Optional[str] = None) -> List[Dict[str, Any]]:
+    rows = []
+    with self._conn() as cx:
+        if scope == "me":
+            cur = cx.execute(
+                "SELECT profile,split_pos,left_text,right_text,notes,created_at FROM segmentations WHERE word=? AND profile=? ORDER BY created_at DESC,id DESC",
+                (word, self.profile)
+            )
+        elif scope and scope.startswith("actor:"):
+            who = scope.split(":", 1)[1]
+            cur = cx.execute(
+                "SELECT profile,split_pos,left_text,right_text,notes,created_at FROM segmentations WHERE word=? AND profile=? ORDER BY created_at DESC,id DESC",
+                (word, who)
+            )
+        else:
+            cur = cx.execute(
+                "SELECT profile,split_pos,left_text,right_text,notes,created_at FROM segmentations WHERE word=? ORDER BY created_at DESC,id DESC",
+                (word,)
+            )
+        for pr, sp, lt, rt, no, ct in cur.fetchall():
+            rows.append({
+                "profile": pr,
+                "split_pos": int(sp),
+                "left_text": lt,
+                "right_text": rt,
+                "notes": no or "",
+                "created_at": str(ct),
+            })
+    return rows
 # Shared normalization and full query pipeline
 
 def normalize_query_fields(prefix: str, suffix: str, regex: str,

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+
 import './theme.css';
 import useGlobalShortcuts from './hooks/useGlobalShortcuts';
 import { queryWords, generateBatchName, commitBatch, getSummary, getHealth, getReminders, getReminderResults, updateReminders } from './api';
@@ -22,6 +23,14 @@ const QueryForm = () => {
     limit: 1000,
     curated_ratio: 20, // percent
   });
+  const prefixRef = useRef(null);
+  const suffixRef = useRef(null);
+  const regexRef = useRef(null);
+  const findRef = useRef(null);
+  const replaceRef = useRef(null);
+  const lengthRef = useRef(null);
+  const limitRef = useRef(null);
+  const queryBtnRef = useRef(null);
   const [rows, setRows] = useState([]);            // [{id, word, freq, glen, splits, notes}]
   const [baseline, setBaseline] = useState([]);    // [splits baseline]
   const [loading, setLoading] = useState(false);
@@ -32,22 +41,16 @@ const QueryForm = () => {
   const [health, setHealth] = useState(null);
   const [onlySelected, setOnlySelected] = useState(false);
   const [selected, setSelected] = useState(new Set());
-  const prefixRef = useRef(null);
-  const suffixRef = useRef(null);
-  const regexRef = useRef(null);
-  const findRef = useRef(null);
-  const replaceRef = useRef(null);
-  const lengthRef = useRef(null);
-  const limitRef = useRef(null);
-  const queryBtnRef = useRef(null);
-  
+
   const refs = useMemo(() => ({
     prefixRef, suffixRef, regexRef, findRef, replaceRef, lengthRef, limitRef, queryBtnRef
-  }), [prefixRef, suffixRef, regexRef, findRef, replaceRef, lengthRef, limitRef, queryBtnRef]);
+  }), []);
 
   const handleSubmit = async (e) => {
     if (e) e.preventDefault();
     setLoading(true);
+    const t0 = performance.now();
+    console.info('[ui] query start', params);
     try {
       const res = await queryWords(params);
       const newRows = res.map((rec, idx) => ({
@@ -61,6 +64,7 @@ const QueryForm = () => {
       setRows(newRows);
       setBaseline(newRows.map(r => r.splits));
       setSelected(new Set());
+      console.info('[ui] query done rows=%d dur_ms=%d', newRows.length, Math.round(performance.now() - t0));
     } catch (err) {
       console.error('[ui] query failed', err);
     }
@@ -110,6 +114,7 @@ const QueryForm = () => {
   };
 
   const showReminderBag = async () => {
+    console.info('[ui] reminders bag start');
     try {
       const res = await getReminderResults();
       const newRows = res.map((rec, idx) => ({
@@ -123,10 +128,12 @@ const QueryForm = () => {
       setRows(newRows);
       setBaseline(newRows.map(r => r.splits));
       setSelected(new Set());
+      console.info('[ui] reminders bag done rows=%d', newRows.length);
     } catch (e) { console.error('[ui] reminders bag failed', e); alert('Failed to load reminders.'); }
   };
 
   const toggleRemindersForSelected = async () => {
+    console.info('[ui] reminders toggle start selected=%d', selected.size);
     const words = rows.filter(r => selected.has(r.id)).map(r => r.word);
     if (words.length === 0) { alert('No rows selected.'); return; }
     try {
@@ -135,15 +142,22 @@ const QueryForm = () => {
       const rem = words.filter(w => cur.has(w));
       if (add.length) await updateReminders('add', add);
       if (rem.length) await updateReminders('remove', rem);
+      console.info('[ui] reminders toggle done add=%d remove=%d', add.length, rem.length);
       alert(`Reminders updated: added ${add.length}, removed ${rem.length}.`);
     } catch (e) { console.error('[ui] reminders toggle failed', e); alert('Failed to update reminders.'); }
   };
 
   const loadSummary = async () => {
-    try { setSummary(await getSummary()); } catch (e) { console.error('[ui] summary failed', e); }
+    try {
+      console.info('[ui] summary start');
+      const s = await getSummary();
+      setSummary(s);
+      console.info('[ui] summary done');
+    } catch (e) { console.error('[ui] summary failed', e); }
   };
 
   const commitEdits = async () => {
+    console.info('[ui] commit start');
     try {
       const edited = rows
         .map((r, idx) => ({ r, idx }))
@@ -153,6 +167,7 @@ const QueryForm = () => {
       let batch = '';
       try { batch = await generateBatchName(params); } catch (_) {}
       const resp = await commitBatch(edited, batch);
+      console.info('[ui] commit done rows=%d batch=%s', edited.length, batch || '(auto)');
       alert(`Committed ${resp.rows} row(s)${batch ? ` in ${batch}` : ''}.`);
       setBaseline(rows.map(r => r.splits));
     } catch (e) {
@@ -188,15 +203,24 @@ const QueryForm = () => {
     <div>
       <form onSubmit={handleSubmit}>
         <FiltersPanel params={params} setParams={setParams} refs={{ prefixRef, suffixRef, regexRef }} />
-        <OptionsPanel params={params} setParams={setParams} onQuery={handleSubmit} onCommit={commitEdits} onSummary={loadSummary} refs={{ lengthRef, limitRef, queryBtnRef }} />
+
+        <OptionsPanel
+          params={params}
+          setParams={setParams}
+          onQuery={handleSubmit}
+          onCommit={commitEdits}
+          onSummary={loadSummary}
+          refs={{ lengthRef, limitRef, queryBtnRef }}
+          loading={loading}
+        />
       </form>
       {loading ? <p>Loading...</p> :
-        <ResultsTable 
-          rows={rows} 
-          baseline={baseline} 
-          selected={selected} 
-          toggleSelected={(id) => setSelected(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; })} 
-          updateRowField={updateRowField} 
+        <ResultsTable
+          rows={rows}
+          baseline={baseline}
+          selected={selected}
+          toggleSelected={(id) => setSelected(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; })}
+          updateRowField={updateRowField}
         />
       }
       <FindReplacePanel

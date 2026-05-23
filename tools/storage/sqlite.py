@@ -164,14 +164,14 @@ class SqliteStorage(StorageBase):
             for gl, c, r in rows:
                 curated[int(gl)] = int(c)
                 remaining[int(gl)] = int(r)
-        res = {
-            "total_words": total_words,
-            "curated_distinct": curated_distinct,
-            "remaining_distinct": max(0, total_words - curated_distinct),
-            "curation_entries": curated_entries,
-            "length_distribution": {"curated": curated, "remaining": remaining},
-        }
-        return res
+            return {
+                "total_words": total_words,
+                "curated_distinct": curated_distinct,
+                "remaining_distinct": max(0, total_words - curated_distinct),
+                "curation_entries": curated_entries,
+                "length_distribution": {"curated": curated, "remaining": remaining},
+            }
+
     def append_summary(self, batch_name: str, summary: Dict[str, Any]) -> str:
         import json as _json
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -203,20 +203,13 @@ class SqliteStorage(StorageBase):
                 "INSERT INTO words(word,freq,glen) VALUES (?,?,?) ON CONFLICT(word) DO UPDATE SET freq=excluded.freq, glen=excluded.glen",
                 recs
             )
-
-    def add_segmentation(self, word: str, left_text: str, right_text: str, split_pos: int, notes: str = "") -> None:
-        with self._conn() as cx:
-            cx.execute(
-                "INSERT INTO segmentations(word,profile,split_pos,left_text,right_text,notes) VALUES(?,?,?,?,?,?)",
-                (word, self.profile, int(split_pos), left_text, right_text, notes)
-            )
-
     def commit_segmentations(self, rows: Iterable[Tuple[str, str, str, int, str]], batch_name: str) -> int:
         """
-        rows: iterable of (word, left_text, right_text, split_pos, notes)
+        Commit multiple segmentation records atomically.
+        Each row is a tuple: (word, left_text, right_text, split_pos, notes).
         """
         seg_rows = [(word, self.profile, int(split_pos), left_text, right_text, notes or "")
-                    for (word, left_text, right_text, split_pos, notes) in (rows or [])]
+                    for (word, left_text, right_text, split_pos, notes) in rows]
         if not seg_rows:
             return 0
         with self._conn() as cx:
@@ -225,6 +218,14 @@ class SqliteStorage(StorageBase):
                 seg_rows
             )
         return len(seg_rows)
+
+    def add_segmentation(self, word: str, left_text: str, right_text: str, split_pos: int, notes: str = "") -> None:
+        with self._conn() as cx:
+            cx.execute(
+                "INSERT INTO segmentations(word,profile,split_pos,left_text,right_text,notes) VALUES(?,?,?,?,?,?)",
+                (word, self.profile, int(split_pos), left_text, right_text, notes)
+            )
+
 
     def list_segmentations(self, word: str, scope: Optional[str] = None) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []

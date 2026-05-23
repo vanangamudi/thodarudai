@@ -384,7 +384,7 @@ class MainWindow(QMainWindow):
             self.curated = get_shared_curated_index(self.batch_dir)
         self._ensure_curated_compat()
         logging.info("Curated index loaded: %d word(s)", getattr(self.curated, "curated_count", 0))
-    
+
     def _init_shortcuts(self):
         from PyQt5.QtGui import QKeySequence
         MyShortcut(QKeySequence("Ctrl+S"), self, activated=self.commit_edits)
@@ -683,15 +683,13 @@ class MainWindow(QMainWindow):
                 "remaining": {gl: remaining_len.get(gl, 0) for gl in lengths},
             },
         }
-    
+
     def append_summary_ledger(self, batch_name):
         summary = self._compute_summary_snapshot()
         try:
             self.storage.append_summary(batch_name, summary)
         except Exception as e:
             logging.error("append_summary via storage failed: %s", e)
-
-
 
     def generate_batch_name(self):
         return cc_default_batch_name(
@@ -750,7 +748,11 @@ class MainWindow(QMainWindow):
         self.dirty = bool(self.edited_ids)
 
     def _parse_split_for_commit(self, word, splits):
+<<<<<<< HEAD
         if not splits or "-" not in splits:
+=======
+        if "-" not in (splits or ""):
+>>>>>>> 5062a46 (frontend fixup; segmentations are properly commited to the database)
             return None
         left, right = [x.strip() for x in splits.split("-", 1)]
         if not left or not right:
@@ -801,7 +803,11 @@ class MainWindow(QMainWindow):
                 self.log_ui_event("COMMIT", {"batch": batch_name, "saved_rows": saved, "mode": "db"})
                 QMessageBox.information(self, "Commit", f"Committed {saved} edited row(s) to database")
             else:
+<<<<<<< HEAD
                 # FS mode
+=======
+                # FS mode: write batch TSV + append file ledger
+>>>>>>> 5062a46 (frontend fixup; segmentations are properly commited to the database)
                 filepath, tsv_lines = self._write_batch_file(batch_name, edited_rows)
                 self._refresh_curated_and_broadcast(tsv_lines)
                 self.append_summary_ledger(batch_name)
@@ -1001,11 +1007,6 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(text)
                 item.setFlags(item.flags() | Qt.ItemIsEditable)
                 self.table.setItem(row, col, item)
-
-
-
-
-
 
     def _selected_split_indexes(self):
         indexes = [ix for ix in self.table.selectedIndexes() if ix.column() == 2]
@@ -1610,7 +1611,7 @@ class MainWindow(QMainWindow):
             self.len_table.setItem(row, 0, QTableWidgetItem(str(gl)))
             self.len_table.setItem(row, 1, QTableWidgetItem(str(curated_len.get(gl, 0))))
             self.len_table.setItem(row, 2, QTableWidgetItem(str(remaining_len.get(gl, 0))))
-    
+
     def _populate_length_table_from_summary(self, s: dict):
         dist = s.get("length_distribution", {}) or {}
         curated = dist.get("curated", {}) or {}

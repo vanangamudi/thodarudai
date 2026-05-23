@@ -11,6 +11,10 @@
   --warn: #f59e0b;
   --changed: #fff7cc;
 }
+.table-wrap {
+  overflow: auto;
+  max-height: 60vh; /* constrain vertical space so table body scrolls */
+}
 .group {
   margin: 4px 0 10px 0;
 }
@@ -52,7 +56,7 @@ label.inline {
     --warn: #f59e0b;
     --changed: #3a2f00;
   }
-  
+
   /* Improve button contrast in dark mode */
   .btn {
     background: linear-gradient(to bottom, #4b5563, #374151); /* slate-600 -> slate-700 (lighter than card) */
@@ -163,12 +167,6 @@ label {
   background: linear-gradient(to bottom, color-mix(in srgb, var(--accent) 88%, white), var(--accent));
   color: #fff;
   border-color: var(--accent-700);
-  text-shadow: 0 1px 0 rgba(0,0,0,0.25);
-}
-
-.table-wrap {
-  overflow: auto;
-  max-height: 60vh;         /* constrain vertical space so body scrolls */
 }
 
 .table {
