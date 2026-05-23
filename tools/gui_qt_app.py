@@ -10,7 +10,6 @@ from collections import Counter
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QLineEdit
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QLabel, QPushButton, QSpinBox, QCheckBox, QTableWidget,
@@ -30,12 +29,7 @@ from tools.curation_core import (
     mix_curated as cc_mix_curated,
     default_batch_name as cc_default_batch_name,
     build_tsv_lines as cc_build_tsv_lines,
-    write_batch_file as cc_write_batch_file,
-    append_ledger as cc_append_ledger,
-    load_reminders as cc_load_reminders,
-    write_reminders as cc_write_reminders,
 )
-from tools.storage import FileStorage, SqliteStorage, PostgresStorage
 from tools.curation_index import CuratedIndexDB
 
 CURATED_INDEX_CACHE = {}
@@ -44,9 +38,18 @@ def get_shared_curated_index(batches_dir):
     idx = CURATED_INDEX_CACHE.get(key)
     if idx is None:
         idx = CuratedIndex(batches_dir)
-        idx.reload()
+        # Safely initialize; CuratedIndexDB has reload(), CuratedIndex does not.
+        if hasattr(idx, "reload"):
+            try:
+                idx.reload()
+            except Exception:
+                pass
+        elif hasattr(idx, "maybe_reload_on_change"):
+            try:
+                idx.maybe_reload_on_change()
+            except Exception:
+                pass
         CURATED_INDEX_CACHE[key] = idx
-        logging.info("Loaded CuratedIndex once: %s", key)
     else:
         logging.info("Reusing shared CuratedIndex: %s", key)
     return idx
@@ -371,13 +374,17 @@ class MainWindow(QMainWindow):
             rev_path = REV_TRIE_PATH or os.path.join(base_dir, "rev.trie")
             self.word_index = get_shared_trie_index(self.wordlist_path, fwd_path, rev_path)
             self.indexer_kind = "trie"
+        elif INDEXER_KIND == "db":
+            self.word_index = None
+            self.indexer_kind = "db"
         else:
             self.word_index = get_shared_word_index(self.wordlist_path)
             self.indexer_kind = "list"
         if not self.curated:
             self.curated = get_shared_curated_index(self.batch_dir)
-        logging.info("Curated index loaded: %d word(s)", self.curated.curated_count)
-
+        self._ensure_curated_compat()
+        logging.info("Curated index loaded: %d word(s)", getattr(self.curated, "curated_count", 0))
+    
     def _init_shortcuts(self):
         from PyQt5.QtGui import QKeySequence
         MyShortcut(QKeySequence("Ctrl+S"), self, activated=self.commit_edits)
@@ -394,6 +401,29 @@ class MainWindow(QMainWindow):
         MyShortcut(QKeySequence("Ctrl+N"), self, activated=self.open_new_window_with_current_query)
         MyShortcut(QKeySequence("Ctrl+Shift+N"), self, activated=self.open_new_window_from_selection)
         self.child_windows = []
+
+    def _ensure_curated_compat(self):
+        # Provide is_curated() if missing (FS CuratedIndex)
+        if self.curated and not hasattr(self.curated, "is_curated"):
+            cw = getattr(self.curated, "curated_words", set())
+            def _is_curated(word, _cw=cw):
+                return word in _cw
+            try:
+                setattr(self.curated, "is_curated", _is_curated)
+            except Exception:
+                pass
+        # Warm load if supported
+        if self.curated:
+            if hasattr(self.curated, "reload"):
+                try:
+                    self.curated.reload()
+                except Exception:
+                    pass
+            elif hasattr(self.curated, "maybe_reload_on_change"):
+                try:
+                    self.curated.maybe_reload_on_change()
+                except Exception:
+                    pass
 
     def __init__(self, ui_scale=1.5, font_size=None, storage=None, curated=None):
         super().__init__()
@@ -451,17 +481,23 @@ class MainWindow(QMainWindow):
         }
 
     def _probe_raw_results(self, q):
-        """Fetch raw rows (word,freq,glen) and measure elapsed time (ms)."""
         min_len, max_len = self.parse_length_spec(q["length_spec"])
-        probe_limit = min(q["limit"] * 5, max(q["limit"] + 500, 5000))
+        probe = min(q["limit"] * 5, max(q["limit"] + 500, 5000))
         t0 = time.perf_counter()
-        rows = self.word_index.query_words(
-            prefix=q["prefix"], suffix=q["suffix"],
-            min_len=min_len, max_len=max_len,
-            limit=probe_limit, offset=0, regex=q["regex"]
-        )
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        return rows, elapsed_ms
+        if getattr(self, "indexer_kind", "list") == "db":
+            rows = self.storage.query_index(
+                prefix=q["prefix"], suffix=q["suffix"], regex=q["regex"],
+                prefix_not=q["prefix_not"], suffix_not=q["suffix_not"], regex_not=q["regex_not"],
+                min_len=min_len, max_len=max_len, limit=probe,
+                curated_ratio=int(round(q["curated_ratio"] * 100.0))
+            )
+            ms = (time.perf_counter() - t0) * 1000.0
+            return rows, ms, False  # keep Python-side negative filters and curated mixing
+        rows = self.word_index.query_words(prefix=q["prefix"], suffix=q["suffix"],
+                                           min_len=min_len, max_len=max_len,
+                                           limit=probe, offset=0, regex=q["regex"])
+        ms = (time.perf_counter() - t0) * 1000.0
+        return rows, ms, False
 
     def _apply_negative_filters(self, rows, q):
         return cc_filter_eligible(rows, q["prefix_not"], q["suffix_not"], q["neg_rx"])
@@ -496,7 +532,17 @@ class MainWindow(QMainWindow):
         self.curated.maybe_reload_on_change()
         q = self._read_query_fields()
         self._log_query_event(q)
-        raw, elapsed_ms = self._probe_raw_results(q)
+        raw, elapsed_ms, db_mixed = self._probe_raw_results(q)
+        if db_mixed:
+            combined = raw  # already filtered and mixed in DB
+            self.log_ui_event("QUERY_TIME", {
+                "indexer": getattr(self, "indexer_kind", "db"),
+                "elapsed_ms": int(round(elapsed_ms)),
+                "queried": len(raw)
+            })
+            self.populate_table_from_results(combined)
+            return
+        # FS fallback: apply python-side filters/mix
         eligible = self._apply_negative_filters(raw, q)
         new_rows, old_rows = self._partition_new_old(eligible)
         combined, shown_new, shown_curated = self._pick_curated_and_new(new_rows, old_rows, q["limit"], q["curated_ratio"])
@@ -575,22 +621,43 @@ class MainWindow(QMainWindow):
 
 
 
-    def _compute_summary_snapshot(self):
-        # Use precomputed maps; avoid scanning the full word list on every save.
-        glen_map = getattr(self.word_index, "glen_map", {})
-        index_words = getattr(self.word_index, "index_words", set())
-        total_words = len(index_words)
+    def _ensure_db_meta(self):
+        if getattr(self, "_db_meta_ready", False):
+            return
+        glen_map = {}
+        index_map = {}
+        try:
+            # Load words metadata from DB
+            if hasattr(self.storage, "_conn"):
+                with self.storage._conn() as cx:
+                    cur = cx.execute("SELECT word, freq, glen FROM words")
+                    for w, fr, gl in cur.fetchall():
+                        gl = int(gl); fr = int(fr)
+                        glen_map[w] = gl
+                        index_map[w] = (w, fr, gl)
+            self._db_glen_map = glen_map
+            self._db_index_words = set(glen_map.keys())
+            self._db_index_map = index_map
+            self._db_meta_ready = True
+        except Exception as e:
+            logging.warning("Failed to load DB word metadata: %s", e)
+            self._db_glen_map = {}
+            self._db_index_words = set()
+            self._db_index_map = {}
+            self._db_meta_ready = True
+
+    def _compute_summary_sets(self):
+        if getattr(self, "indexer_kind", "list") == "db":
+            self._ensure_db_meta()
+            glen_map = self._db_glen_map
+            index_words = self._db_index_words
+        else:
+            glen_map = self.word_index.glen_map
+            index_words = self.word_index.index_words
         curated_set = getattr(self.curated, "curated_words", set())
         curated_in_index = curated_set & index_words
-        remaining_distinct = total_words - len(curated_in_index)
-        total_curations = getattr(self.curated, "total_curation_entries", 0)
-        return {
-            "total_words": total_words,
-            "curated_distinct": len(curated_in_index),
-            "remaining_distinct": remaining_distinct,
-            "curation_entries": total_curations,
-            "length_distribution": {"curated": {}, "remaining": {}},
-        }
+        remaining_set = index_words - curated_in_index
+        return glen_map, index_words, curated_in_index, remaining_set
 
     def append_summary_ledger(self, batch_name):
         summary = self._compute_summary_snapshot()
@@ -830,7 +897,15 @@ class MainWindow(QMainWindow):
             self.log_ui_event("REMINDER_SHOW", {"count": 0})
             return
         # Build results as (word, freq, glen) for all reminders present in the index
-        index_map = {w: (w, fr, gl) for (w, fr, gl) in self.word_index.words}
+        if getattr(self, "indexer_kind", "list") == "db":
+            self._ensure_db_meta()
+            index_map = self._db_index_map
+        else:
+            if getattr(self, "indexer_kind", "list") == "db":
+                self._ensure_db_meta()
+                index_map = self._db_index_map
+            else:
+                index_map = {w: (w, fr, gl) for (w, fr, gl) in self.word_index.words}
         results = []
         for w in sorted(self.reminders):
             if w in index_map:
@@ -1441,13 +1516,6 @@ class MainWindow(QMainWindow):
             menu.addAction(act)
         menu.exec_(self.table.viewport().mapToGlobal(pos))
 
-    def _compute_summary_sets(self):
-        glen_map = self.word_index.glen_map
-        index_words = self.word_index.index_words
-        curated_set = getattr(self.curated, "curated_words", set())
-        curated_in_index = {w for w in curated_set if w in index_words}
-        remaining_set = index_words - curated_in_index
-        return glen_map, index_words, curated_in_index, remaining_set
 
     def _update_summary_labels(self, total_words, curated_distinct, remaining_distinct, total_curations):
         self.sum_total_words.setText(f"Total words: {total_words}")
@@ -1474,8 +1542,37 @@ class MainWindow(QMainWindow):
             self.len_table.setItem(row, 0, QTableWidgetItem(str(gl)))
             self.len_table.setItem(row, 1, QTableWidgetItem(str(curated_len.get(gl, 0))))
             self.len_table.setItem(row, 2, QTableWidgetItem(str(remaining_len.get(gl, 0))))
+    
+    def _populate_length_table_from_summary(self, s: dict):
+        dist = s.get("length_distribution", {}) or {}
+        curated = dist.get("curated", {}) or {}
+        remaining = dist.get("remaining", {}) or {}
+        # Keys may be int or str; normalize to ints for sorting
+        def get_int(d, k):
+            return int(d.get(k, d.get(str(k), 0)) or 0)
+        keys = sorted({int(k) for k in list(curated.keys()) + list(remaining.keys())})
+        self.len_table.setRowCount(0)
+        for gl in keys:
+            row = self.len_table.rowCount()
+            self.len_table.insertRow(row)
+            self.len_table.setItem(row, 0, QTableWidgetItem(str(gl)))
+            self.len_table.setItem(row, 1, QTableWidgetItem(str(get_int(curated, gl))))
+            self.len_table.setItem(row, 2, QTableWidgetItem(str(get_int(remaining, gl))))
 
     def update_summary(self):
+        if getattr(self, "indexer_kind", "list") == "db" and hasattr(self.storage, "summary"):
+            try:
+                s = self.storage.summary()
+                self._update_summary_labels(
+                    int(s.get("total_words", 0)),
+                    int(s.get("curated_distinct", 0)),
+                    int(s.get("remaining_distinct", 0)),
+                    int(s.get("curation_entries", 0)),
+                )
+                self._populate_length_table_from_summary(s)
+                return
+            except Exception as e:
+                logging.warning("DB summary failed, falling back to local computation: %s", e)
         glen_map, index_words, curated_in_index, remaining_set = self._compute_summary_sets()
         total_words = len(index_words)
         curated_distinct = len(curated_in_index)
@@ -1492,6 +1589,7 @@ if __name__ == "__main__":
     parser.add_argument("--sqlite_path", default=None, help="Path to sqlite db (default: <profile-dir>/curation.db)")
     parser.add_argument("--profile", default="default", help="Profile name")
     parser.add_argument("--base_dir", default=None, help="Optional base directory")
+    parser.add_argument("--pg-dsn", default=None, help="Postgres DSN (fallback to POSTGRES_DSN env var)")
     parser.add_argument("--ui_scale", type=float, default=1.0, help="UI scale multiplier for fonts and sizes (e.g., 1.25)")
     parser.add_argument("--font_size", type=int, default=None, help="Base font size in points (overrides ui_scale-derived size)")
     parser.add_argument("--indexer", choices=["list", "trie"], default="list", help="Choose word indexer: classic list or trie-based")
@@ -1507,26 +1605,40 @@ if __name__ == "__main__":
     REMINDERS_PATH = os.path.abspath(profile.reminders_path)
     # Unified storage abstraction: instantiate the storage backend based on the command-line argument.
     if args.storage == "sqlite":
+        from tools.storage.sqlite import SqliteStorage
         SQLITE_PATH = args.sqlite_path or os.path.join(os.path.dirname(WORDLIST_PATH), "curation.db")
         storage = SqliteStorage(SQLITE_PATH, profile=profile.name)
         curated = CuratedIndexDB(storage)
     elif args.storage == "postgres":
+        from tools.storage.postgres import PostgresStorage
         dsn = args.pg_dsn or os.environ.get("POSTGRES_DSN", "")
         if not dsn:
             raise SystemExit("Postgres storage selected but no DSN provided. Use --pg_dsn or set POSTGRES_DSN.")
         storage = PostgresStorage(dsn, profile=profile.name)
         curated = CuratedIndexDB(storage)
     else:
+        from tools.storage.file import FileStorage
         storage = FileStorage(BATCHES_DIR, LEDGER_PATH, REMINDERS_PATH)
         curated = CuratedIndex(BATCHES_DIR)
-    curated.reload()
+    if hasattr(curated, "reload"):
+        try:
+            curated.reload()
+        except Exception:
+            pass
+    elif hasattr(curated, "maybe_reload_on_change"):
+        try:
+            curated.maybe_reload_on_change()
+        except Exception:
+            pass
     # Indexer selection globals
-    INDEXER_KIND = args.indexer
+    INDEXER_KIND = ("db" if args.storage in ("sqlite", "postgres") else args.indexer)
     if INDEXER_KIND == "trie":
         base_dir = os.path.dirname(WORDLIST_PATH)
         FWD_TRIE_PATH = args.fwd_trie or os.path.join(base_dir, "fwd.trie")
         REV_TRIE_PATH = args.rev_trie or os.path.join(base_dir, "rev.trie")
         logging.info("Using trie indexer (fwd=%s, rev=%s)", FWD_TRIE_PATH, REV_TRIE_PATH)
+    elif INDEXER_KIND == "db":
+        logging.info("Using DB indexer (storage-backed)")
     else:
         logging.info("Using classic list indexer")
 

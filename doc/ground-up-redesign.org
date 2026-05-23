@@ -1,0 +1,343 @@
+#+title: Ground-up redesign — multi-user Tamil word segmentation platform
+#+author: Project maintainers
+#+language: en
+
+* Ground-up redesign: multi-user Tamil word segmentation platform
+
+System components
+- Backend API (FastAPI)
+  - Stateless endpoints:
+    - =/api/query= returns ranked words.
+    - =/api/commit= writes segmentations (DB) or batches+ledger (FS).
+    - =/api/segmentations= lists history for a word, optional scope.
+    - =/api/summary= global or scoped summary.
+    - =/api/reminders= CRUD for reminders and =/api/reminders/results= lookup.
+    - =/api/generate_batch_name= helper.
+    - =/api/health= runtime info.
+  - Future: auth endpoints (=/api/login=, =/api/logout=, =/api/me=).
+- Storage abstraction (=tools/storage.py=)
+  - FileStorage (legacy batches, ledger, reminders).
+  - SqliteStorage and PostgresStorage (canonical DB stores).
+  - Uniform methods:
+    - =write_batch()=, =append_ledger()= (FS compat)
+    - =load_reminders()=, =write_reminders()=
+    - =has_words()=, =ensure_words()=
+    - =query_index()= (DB-side filtering and curated mixing where possible)
+    - =get_latest_splits()= for dataset export
+    - =add_segmentation()=, =list_segmentations()=
+- Indexing layer
+  - WordIndex (list-based) for FS and in-memory flows.
+  - TrieWordIndex (optional) via chorkilai OnDiskTrie for fast prefix/suffix.
+  - DB queries preferred when databases are in play.
+- Frontends
+  - Web UI (React + Vite) is the primary UI.
+  - Qt GUI retained and refactored to share logic via common modules.
+- Utilities
+  - Word index build and load (TSV and SQLite).
+  - Export dataset from latest segmentations.
+  - Tokenizer training and inference.
+
+This document defines the target architecture and a staged migration plan from the current single-user, file‐backed Qt tool to a multi‐user, database‐backed WebUI while retaining Qt support. It keeps the default view global (no user filtering) and allows optional per‐user scoped views on demand.
+
+Quick usage (current state)
+
+- Build word index TSV
+#+begin_src sh
+python -m tools.build_word_index --profile default --base_dir ./data --out ./data/word-index.tsv
+#+end_src
+
+- Load words into SQLite (optional, DB mode)
+#+begin_src sh
+python -m tools.load_words sqlite --files ./data/word-index.tsv --db_path ./data/curation.db
+#+end_src
+
+- Start backend (filesystem mode)
+#+begin_src sh
+python webui1/app.py
+# or
+uvicorn webui1.app:app --host 127.0.0.1 --port 8000 --reload
+#+end_src
+
+- Start backend (SQLite mode)
+#+begin_src sh
+STORAGE_BACKEND=sqlite SQLITE_PATH=./data/curation.db python webui1/app.py
+#+end_src
+
+- Start frontend (Vite + React)
+#+begin_src sh
+cd webui1/frontend
+npm install
+npm run dev
+# UI: http://127.0.0.1:5173  |  API: http://127.0.0.1:8000
+#+end_src
+
+- Qt GUI (filesystem mode)
+#+begin_src sh
+python tools/gui_qt_app.py --storage fs --profile default --base_dir ./data
+#+end_src
+
+- Qt GUI (SQLite mode)
+#+begin_src sh
+python tools/gui_qt_app.py --storage sqlite --sqlite_path ./data/curation.db --profile default --base_dir ./data
+#+end_src
+
+- Trie indexer (optional; build and query)
+#+begin_src sh
+python -m tools.trie_word_indexer --build --profile default --base_dir ./data
+python -m tools.trie_word_indexer --profile default --base_dir ./data --query_prefix ka --limit 50
+#+end_src
+
+Notes
+- Web UI commits currently write batch TSV + append ledger in all backends; DB-native segmentations will be enabled in later steps.
+- Grapheme length is computed with arichuvadi; if ari.length() is unavailable, a safe fallback counts grapheme tokens
+
+Goals
+- Multi-user segmentation of a fixed word corpus; allow multiple segmentations per word.
+- Default queries and summaries are global across users; do not filter by user unless explicitly requested.
+- Scalable, low-latency prefix/suffix/regex queries.
+- Consistent storage abstraction for file (legacy) and databases (sqlite, postgres).
+- Clear migration steps; backward-compatible where feasible.
+
+Non-goals (initially)
+- Complex authz/roles beyond simple login.
+- Distributed batching/workflows or real-time collaboration.
+
+Domain model and invariants
+- Word
+  - Immutable surface form =word= with attributes =freq= and =glen= (grapheme length).
+  - Invariant: =glen= equals =ari.length(word)=.
+- Segmentation
+  - Binary split of a word into two parts by a user.
+  - Represented as:
+    - =split_pos=: integer grapheme boundary 1..(glen-1)
+    - =left_text=, =right_text=: optional cached strings for convenience
+    - =splits=: legacy string form; derive as =left_text "-" right_text= or =word= if no split
+  - Invariants:
+    - =left_text + right_text = word= at the grapheme boundary
+    - =1 <= split_pos < glen=
+- User (actor)
+  - Identity for DB-backed writes; called =actor_id= at app level; stored in DB in column =profile= (compat).
+  - FS mode uses =Profile.name= as a path namespace only; no isolation.
+- Ledger (event log)
+  - Append-only events (segmentation adds/edits, batch commits, summaries).
+  - Segmentation truth resides in =segmentations=, not the ledger.
+
+Storage backends (mutually exclusive at runtime)
+- FileStorage (legacy)
+  - Batches and a flat ledger TSV; reminders TSV.
+  - Global-only; cannot support per-user query scopes.
+- SqliteStorage / PostgresStorage
+  - Canonical store; write paths always attribute =profile= with =actor_id=.
+  - Read paths default to global view; honor optional =scope= only when requested.
+
+Database schema (v2)
+
+Use this normalized schema (Postgres shown; SQLite analogous, minus extensions).
+
+#+begin_src sql
+-- users
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- words (canonical corpus)
+CREATE TABLE IF NOT EXISTS words (
+  word TEXT PRIMARY KEY,
+  freq INTEGER NOT NULL,
+  glen INTEGER NOT NULL
+);
+
+-- segmentations (truth source)
+CREATE TABLE IF NOT EXISTS segmentations (
+  id BIGSERIAL PRIMARY KEY,
+  word TEXT NOT NULL REFERENCES words(word) ON DELETE CASCADE,
+  profile TEXT NOT NULL,           -- actor_id (user)
+  split_pos INTEGER NOT NULL,      -- grapheme boundary: 1..glen-1
+  left_text TEXT NOT NULL,
+  right_text TEXT NOT NULL,
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS seg_word_created ON segmentations(word, created_at DESC);
+CREATE INDEX IF NOT EXISTS seg_profile_word ON segmentations(profile, word);
+
+-- ledger (append-only events; optional)
+CREATE TABLE IF NOT EXISTS ledger (
+  id BIGSERIAL PRIMARY KEY,
+  ts TIMESTAMPTZ NOT NULL,
+  profile TEXT,
+  event TEXT NOT NULL,             -- e.g., 'segmentation.created', 'batch.committed', 'summary'
+  payload JSONB                    -- details, e.g., segmentation id list, summary data
+);
+
+-- reminders (per-user personal list)
+CREATE TABLE IF NOT EXISTS reminders (
+  profile TEXT NOT NULL,
+  word TEXT NOT NULL,
+  notes TEXT,
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY(profile, word)
+);
+#+end_src
+
+Materialized/simple views to accelerate common reads
+
+#+begin_src sql
+-- latest (by recency) segmentation per word globally
+CREATE VIEW v_latest_segmentation_global AS
+SELECT DISTINCT ON (word)
+  word, profile, split_pos, left_text, right_text, created_at
+FROM segmentations
+ORDER BY word, created_at DESC, id DESC;
+
+-- latest segmentation per word by profile
+CREATE VIEW v_latest_segmentation_by_profile AS
+SELECT DISTINCT ON (profile, word)
+  profile, word, split_pos, left_text, right_text, created_at
+FROM segmentations
+ORDER BY profile, word, created_at DESC, id DESC;
+
+-- curated flags and counts
+CREATE VIEW v_curated_stats AS
+SELECT
+  w.word,
+  COALESCE(g.created_at, NULL) IS NOT NULL AS curated_any,
+  COALESCE(cnt.n, 0) AS curated_count
+FROM words w
+LEFT JOIN v_latest_segmentation_global g ON g.word = w.word
+LEFT JOIN (
+  SELECT word, COUNT(*)::INT AS n
+  FROM segmentations
+  GROUP BY word
+) cnt ON cnt.word = w.word;
+#+end_src
+
+Query engine and curated mixing in the DB
+- Inputs: =prefix=, =suffix=, =regex=, =min_len=, =max_len=, =limit=, curated mixing ratio, and an optional =curated_scope=.
+- Default behavior: curated scope = global (no profile filter).
+- Optional curated scope:
+  - ="me"=: restrict curated condition to =profile = :actor_id=
+  - ="actor:NAME"=: restrict to that =profile= name
+- Canonical ranking: =ORDER BY glen DESC, freq DESC, word ASC=
+
+Postgres fast-path indexes
+- Trigram for regex and prefix/suffix:
+  - ~CREATE EXTENSION IF NOT EXISTS pg_trgm;~
+  - ~CREATE INDEX IF NOT EXISTS idx_words_word_trgm ON words USING gin (word gin_trgm_ops);~
+- Suffix fast-path (optional):
+  - ~CREATE INDEX IF NOT EXISTS idx_words_rev ON words ((reverse(word)));~ with matching condition ~reverse(word) LIKE reverse('%suffix')~
+- Length and rank:
+  - B-tree on =(glen, freq DESC, word)= or separate on =glen= and default ORDER BY applies.
+
+SQLite fast-paths
+- B-tree on =word= and =glen=.
+- Optional FTS5 virtual table mirror (future), or use custom REGEXP (already in =SqliteStorage=) and B-tree filters.
+
+API surface (backend)
+- Auth (WebUI only)
+  - =POST /api/login=: username+password, on success sets session; returns actor_id.
+  - =POST /api/logout=
+  - =GET /api/me=
+- Query
+  - =POST /api/query=: body params
+    - =prefix, suffix, regex, prefix_not, suffix_not, regex_not=
+    - =length_spec, limit, curated_ratio=
+    - optional =curated_scope= with values =all= (default), =me=, =actor:NAME=
+  - DB backends: storage executes SQL and returns final rows already filtered and mixed.
+- Segmentation commit
+  - =POST /api/segmentations/commit=
+    - Payload: array of {word, left_text, right_text, notes}, plus optional =batch= label.
+    - Writes rows to =segmentations= with =profile=:session user; appends ledger event with summary.
+- Segmentation history
+  - =GET /api/segmentations?word=...=: list all segmentations for a word (global), optionally filter =profile=.
+- Summary
+  - =GET /api/summary[?scope=all|me|actor:NAME]=: totals and length distributions, using =v_curated_stats= (and per-scope variants).
+- Reminders
+  - =GET/POST /api/reminders=, =GET /api/reminders/results=: always actor-scoped.
+
+Frontend behavior
+
+WebUI (database-only)
+- Requires login; server refuses FS mode.
+- Query form default =curated_scope= "all"; user can toggle to "Mine only".
+- Results show:
+  - curated badge/count (e.g., curated_count>0)
+  - optional “latest segmentation” preview (from =v_latest_segmentation_global=)
+- Commit creates new segmentation rows; no destructive updates.
+- Summary honors selected scope.
+
+Qt app
+- =Profile.name= maps to =actor_id= in DB mode; maps to directory paths in FS mode.
+- Default queries are global; add a “Mine only” checkbox that requests =curated_scope= "me" in DB mode and is disabled in FS mode.
+- Commit writes:
+  - FS mode: batch TSV + ledger TSV (legacy)
+  - DB mode: =segmentations= rows with =profile=:actor_id, plus ledger event.
+
+Migration plan (phased)
+
+Phase 0: Baseline (done)
+- Unify helpers, abstract storage, add Postgres, and DB-side query/mix for sqlite/postgres.
+
+Phase 1: Introduce v2 schema (DB only)
+- Add =segmentations=, =users= tables and views listed above.
+- Extend =SqliteStorage= and =PostgresStorage=:
+  - =add_segmentation(word, left, right, split_pos, notes)=
+  - =list_segmentations(word, scope)=
+  - Update =get_latest_splits(scope)= to pull from =v_latest_segmentation_global= (ignore =ledger=).
+  - Update curated reads (=get_curated_sets(scope)=) to use =segmentations= groups, default =scope=None= (global).
+  - Maintain ledger as append-only event log (payload references segmentation ids).
+
+Phase 2: WebUI endpoints
+- Add auth/session endpoints.
+- Replace =/api/commit= to call =add_segmentation(...)= per row and write a single ledger event; keep batch id for traceability.
+- Add optional query parameter =curated_scope=; pipe to storage.query_index.
+
+Phase 3: Qt app (DB path)
+- Toggle DB path to use =add_segmentation=; leave FS path unchanged.
+- Add “Mine only” toggle; pass =curated_scope= to =query_index= only for DB storage.
+
+Phase 4: Tools and exporters
+- Update =tools/export_dataset.py= to source from =get_latest_splits(scope)= (already abstracted).
+- Provide =tools/migrate_ledger_to_segmentations.py= to backfill =segmentations= from legacy =ledger= rows.
+
+Phase 5: Performance and UX
+- Postgres: enable =pg_trgm= and the suggested indexes; adjust query plans as needed.
+- Add UI affordances: curated badges, history per word, comparisons across user segmentations.
+
+Open questions and decisions
+- Canonicalization of =splits=
+  - Store both =split_pos= and =left_text/right_text= for safety; enforce that they reconstruct the =word= by grapheme boundary. Keep =splits= (string) for compatibility and export.
+- “Recommended” segmentation
+  - Optional column or a separate table to mark a recommendation per word (by admin or consensus rule).
+- Conflict handling
+  - No overwrites; each commit inserts a new row. Web UI may warn if someone else just created a newer segmentation.
+
+Implementation checkpoints (per phase)
+
+- Storage interfaces
+  - New write path: =add_segmentation(...)= with implicit actor_id in ctor.
+  - Read paths accept optional =scope=: default None (global), =me=, or specific actor.
+- Backend
+  - Auth in WebUI with session; actor_id available on request context.
+  - Query endpoint supports =curated_scope=; default "all".
+- Frontends
+  - WebUI: Login, scope selector, commit via segmentations.
+  - Qt: “Mine only” toggle in DB mode; unchanged in FS mode.
+
+Runbook (after migration)
+- Start WebUI (DB required):
+  #+begin_example
+  STORAGE_BACKEND=postgres POSTGRES_DSN=postgresql://user:pass@host:5432/db \
+  SECRET_KEY=... USERS='{"alice":"$2b$...","bob":"$2b$..."}' \
+  uvicorn webui1.app:app --host 127.0.0.1 --port 8000
+  #+end_example
+- Seed words into DB (one-time if empty):
+  #+begin_example
+  python -m tools.load_words sqlite --files data/word-index.tsv --db_path data/curation.db
+  #+end_example
+- Export dataset (global or scoped):
+  #+begin_example
+  python -m tools.export_dataset --profile default --storage postgres --pg_dsn ...  # default scope=all
+  #+end_example

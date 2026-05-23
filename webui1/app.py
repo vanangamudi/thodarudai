@@ -3,8 +3,9 @@ from fastapi import FastAPI, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import os, time, logging, math, random, json
+import arichuvadi as ari
 from tools.profile import Profile
-from tools.storage import FileStorage, SqliteStorage, PostgresStorage
+from tools.storage.file import FileStorage
 from tools.curation_index import CuratedIndexDB
 import re
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -52,23 +53,111 @@ STORAGE = None
 WORD_INDEX = None
 CURATED = None
 
-def initialize_services():
-    global WORD_INDEX, CURATED, STORAGE
-    WORD_INDEX = WordIndex(WORDLIST_PATH)
+def _init_word_index(wordlist_path):
+    from tools.word_indexer import WordIndex
+    return WordIndex(wordlist_path)
+
+def _init_storage_and_curated():
     sb = STORAGE_BACKEND.lower()
     if sb == "sqlite":
-        STORAGE = SqliteStorage(SQLITE_PATH, profile=PROFILE_NAME)
-        CURATED = CuratedIndexDB(STORAGE)
+        from tools.storage.sqlite import SqliteStorage
+        storage = SqliteStorage(SQLITE_PATH, profile=PROFILE_NAME)
+        curated = CuratedIndexDB(storage)
     elif sb == "postgres":
         if not POSTGRES_DSN:
             raise RuntimeError("POSTGRES_DSN is required when STORAGE_BACKEND=postgres")
-        STORAGE = PostgresStorage(POSTGRES_DSN, profile=PROFILE_NAME)
-        CURATED = CuratedIndexDB(STORAGE)
+        from tools.storage.postgres import PostgresStorage
+        storage = PostgresStorage(POSTGRES_DSN, profile=PROFILE_NAME)
+        curated = CuratedIndexDB(storage)
     else:
-        STORAGE = FileStorage(BATCHES_DIR, LEDGER_PATH, REMINDERS_PATH)
-        CURATED = CuratedIndex(BATCHES_DIR)
+        storage = FileStorage(BATCHES_DIR, LEDGER_PATH, REMINDERS_PATH)
+        curated = CuratedIndex(BATCHES_DIR)
+    return storage, curated
+
+def _seed_db_words_if_empty(storage, wordlist_path):
+    sb = STORAGE_BACKEND.lower()
+    if sb not in ("sqlite", "postgres"):
+        return
+    try:
+        if not storage.has_words() and os.path.exists(wordlist_path):
+            recs = []
+            with open(wordlist_path, "r", encoding="utf-8") as f:
+                hdr = f.readline().strip().split("\t")
+                idx = {h: i for i, h in enumerate(hdr)}
+                for ln in f:
+                    if not ln.strip():
+                        continue
+                    c = ln.rstrip("\n").split("\t")
+                    recs.append((c[idx["word"]], int(c[idx["freq"]]), int(c[idx["glen"]])))
+            storage.ensure_words(recs)
+    except Exception as e:
+        logger.warning("Seeding DB words failed: %s", e)
+
+def initialize_services():
+    global WORD_INDEX, CURATED, STORAGE
+    WORD_INDEX = _init_word_index(WORDLIST_PATH)
+    STORAGE, CURATED = _init_storage_and_curated()
     CURATED.reload()
+    _seed_db_words_if_empty(STORAGE, WORDLIST_PATH)
     logging.info("Initialized WORD_INDEX (%d words), CURATED (%d), storage=%s", len(WORD_INDEX.words), CURATED.curated_count, STORAGE_BACKEND)
+def _build_tsv_min(rows):
+    return core_build_tsv_lines(rows)
+
+def _parse_split_for_commit(word, splits):
+    if "-" not in (splits or ""): return None
+    left, right = [x.strip() for x in splits.split("-", 1)]
+    if not left or not right: return None
+    try: sp = int(ari.length(left))
+    except Exception: sp = max(1, len(left))
+    return left, right, sp
+
+def _db_do_query(fields, min_len, max_len):
+    t0 = time.perf_counter()
+    rows = STORAGE.query_index(prefix=fields["prefix"], suffix=fields["suffix"], regex=fields["regex"],
+        prefix_not=fields["prefix_not"], suffix_not=fields["suffix_not"], regex_not=fields["regex_not"],
+        min_len=min_len, max_len=max_len, limit=fields["limit"], curated_ratio=fields["curated_ratio"])
+    dur = int((time.perf_counter() - t0) * 1000)
+    logger.info("QUERY_DB returned=%d dur_ms=%d", len(rows), dur)
+    return rows, dur
+
+def _fs_do_query(fields, min_len, max_len):
+    t0 = time.perf_counter()
+    probe = min(fields["limit"] * 5, max(fields["limit"] + 500, 5000))
+    raw = WORD_INDEX.query_words(prefix=fields["prefix"], suffix=fields["suffix"],
+                                 min_len=min_len, max_len=max_len,
+                                 limit=probe, offset=0, regex=fields["regex"])
+    neg_rx = compile_neg_regex(fields["regex_not"])
+    eligible = core_filter_eligible(raw, fields["prefix_not"], fields["suffix_not"], neg_rx)
+    new_rows, old_rows = core_partition_new_old(eligible, CURATED)
+    combined = core_mix_curated(new_rows, old_rows, fields["limit"], fields["curated_ratio"])
+    dur = int((time.perf_counter() - t0) * 1000)
+    logger.info("QUERY_FS raw=%d eligible=%d new=%d curated=%d returned=%d dur_ms=%d", len(raw), len(eligible), len(new_rows), len(old_rows), len(combined), dur); return combined, dur
+
+
+def _render_query_result(request, rows, dur_ms):
+    acc = (request.headers.get("accept","").lower())
+    if "text/html" in acc:
+        return HTMLResponse(content=render_results_html(rows))
+    return {"results": rows, "elapsed_ms": dur_ms}
+
+def _commit_db_rows(rows, batch_name, tsv_lines):
+    saved = 0
+    for rec in rows:
+        rec_id, word, splits, freq, glen, notes = (rec + ["", "", "", ""])[:6]
+        ps = _parse_split_for_commit(word, splits)
+        if not ps: continue
+        lt, rt, sp = ps; STORAGE.add_segmentation(word, lt, rt, sp, notes or ""); saved += 1
+    return f"{STORAGE_BACKEND}://segmentations#{batch_name}", f"{STORAGE_BACKEND}://ledger#{batch_name}", saved
+
+def _commit_fs_rows(rows, batch_name, tsv_lines):
+    bp = STORAGE.write_batch(rows, batch_name)
+    lp = STORAGE.append_ledger(tsv_lines, batch_name)
+    return bp, lp
+
+def _update_curated_after_commit(tsv_lines):
+    if hasattr(CURATED, "update_from_batch"): CURATED.update_from_batch(tsv_lines)
+    else: CURATED.maybe_reload_on_change()
+
 app = FastAPI(title="Tamil Splits Web UI")
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -152,6 +241,26 @@ def get_reminders():
         logging.exception("Error in reminders get")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/commit")
+def api_commit(edited_rows: str = Form(...), batch: str = Form(None)):
+    try:
+        rows = json.loads(edited_rows) or []
+        if not isinstance(rows, list):
+            raise HTTPException(status_code=400, detail="edited_rows must be a JSON list")
+        # Build TSV lines for ledger append and curated fast-path update
+        tsv_lines = _build_tsv_min(rows)
+        batch_name = batch or default_batch_name("", "", "8-")
+        # For now, always go through storage’s write_batch + append_ledger (works for fs/sqlite/postgres)
+        batch_path = STORAGE.write_batch(rows, batch_name)
+        ledger_path = STORAGE.append_ledger(tsv_lines, batch_name)
+        _update_curated_after_commit(tsv_lines)
+        return {"status": "ok", "rows": len(rows), "batch": batch_name, "batch_path": batch_path, "ledger_path": ledger_path}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in /api/commit")
+        raise HTTPException(status_code=500, detail=str(e))
+
 from fastapi import Body
 @app.post("/api/reminders")
 def update_reminders(action: str = Form(...), words_json: str = Form("[]")):
@@ -192,6 +301,32 @@ def api_generate_batch_name(prefix: str = Form(""), suffix: str = Form(""), leng
         logging.exception("Error generating batch name")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/api/query")
+def api_query(
+    request: Request,
+    prefix: str = Form(""),
+    suffix: str = Form(""),
+    regex: str = Form(""),
+    prefix_not: str = Form(""),
+    suffix_not: str = Form(""),
+    regex_not: str = Form(""),
+    length_spec: str = Form("8-"),
+    limit: int = Form(1000),
+    curated_ratio: int = Form(20),
+):
+    try:
+        fields = normalize_query_fields(prefix, suffix, regex, prefix_not, suffix_not, regex_not, length_spec, limit, curated_ratio)
+        min_len, max_len = parse_length_spec(fields["length_spec"])
+        if STORAGE_BACKEND.lower() == "sqlite":
+            rows, dur_ms = _db_do_query(fields, min_len, max_len)
+        else:
+            rows, dur_ms = _fs_do_query(fields, min_len, max_len)
+        return _render_query_result(request, rows, dur_ms)
+    except Exception as e:
+        logger.exception("Error in /api/query")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/health")
 def health():
     try:
@@ -218,67 +353,12 @@ def health():
         logger.exception("Health check failed")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/query")
-def query_words(request: Request,
-                prefix: str = Form(""), suffix: str = Form(""),
-                regex: str = Form(""), length_spec: str = Form("8-"),
-                limit: int = Form(1000),
-                prefix_not: str = Form(""), suffix_not: str = Form(""),
-                regex_not: str = Form(""), curated_ratio: int = Form(20)):
-    try:
-        fields = normalize_query_fields(prefix, suffix, regex,
-                                        prefix_not, suffix_not, regex_not,
-                                        length_spec, limit, curated_ratio)
-        t0 = time.perf_counter()
-        logger.info("QUERY %s", {k: fields[k] for k in ("prefix","suffix","regex","length_spec","limit","curated_ratio","prefix_not","suffix_not","regex_not")})
-        min_len, max_len = parse_length_spec(fields["length_spec"])
-        probe_limit = min(fields["limit"] * 5, max(fields["limit"] + 500, 5000))
-        raw = WORD_INDEX.query_words(prefix=fields["prefix"], suffix=fields["suffix"],
-                                 min_len=min_len, max_len=max_len,
-                                 limit=probe_limit, offset=0, regex=fields["regex"])
-        neg_rx = compile_neg_regex(fields["regex_not"])
-        eligible = core_filter_eligible(raw, fields["prefix_not"], fields["suffix_not"], neg_rx)
-        new_rows, old_rows = core_partition_new_old(eligible, CURATED)
-        combined = core_mix_curated(new_rows, old_rows, fields["limit"], fields["curated_ratio"])
-        dur_ms = int((time.perf_counter() - t0) * 1000)
-        logger.info("QUERY_STATS raw=%d eligible=%d new=%d curated=%d returned=%d dur_ms=%d",
-                    len(raw), len(eligible), len(new_rows), len(old_rows), len(combined), dur_ms)
-        if "text/html" in (request.headers.get("accept","").lower()):
-            return HTMLResponse(content=render_results_html(combined))
-        return {"results": combined, "elapsed_ms": dur_ms}
-    except Exception as e:
-        logging.exception("Error in query")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/commit")
-def commit_edits(edited_rows: str = Form(...), batch: str = Form("")):
-    try:
-        rows = json.loads(edited_rows) or []
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"invalid edited_rows: {e}")
-    try:
-        batch_name = batch if batch else f"{time.strftime('%Y%m%dT%H%M%S')}-batch.tsv"
-        tsv_lines = core_build_tsv_lines(rows)
-        batch_path = STORAGE.write_batch(rows, batch_name)
-        ledger_abs = STORAGE.append_ledger(tsv_lines, batch_name)
-        if hasattr(CURATED, "update_from_batch"):
-            CURATED.update_from_batch(tsv_lines)
-        else:
-            CURATED.maybe_reload_on_change()
-        logger.info("COMMIT done rows=%d batch=%s wrote_batch=%s wrote_ledger=%s",
-                    len(rows), batch_name, batch_path, ledger_abs)
-        return {"status": "committed",
-                "batch": batch_name,
-                "batch_path": batch_path,
-                "ledger_path": ledger_abs,
-                "rows": len(rows)}
-    except Exception as e:
-        logging.exception("Error in commit")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/summary")
 def get_summary():
     try:
+        if hasattr(STORAGE, "summary"):
+            return STORAGE.summary()
         return core_compute_summary_data(WORD_INDEX, CURATED)
     except Exception as e:
         logging.exception("Error in summary endpoint")

@@ -3,6 +3,18 @@ import gzip
 import arichuvadi as ari
 from collections import Counter
 
+def grapheme_length(s):
+    try:
+        # Prefer ari.length if present
+        return ari.length(s)  # may not exist in some builds
+    except Exception:
+        try:
+            # Fallback: count grapheme tokens
+            return len(list(ari.get_letters_coding(s)))
+        except Exception:
+            # Last resort: codepoint length
+            return len(s)
+
 def openfile(filepath, mode='rt', *args, **kwargs):
     if filepath.endswith('.gz'):
         return gzip.open(filepath, mode, *args, **kwargs)
@@ -24,6 +36,6 @@ def count_words(filepaths):
                 except Exception:
                     fr = 1
                 cnt[word] += fr
-    records = [(w, n, ari.length(w)) for w, n in cnt.items()]
+    records = [(w, n, grapheme_length(w)) for w, n in cnt.items()]
     records.sort(key=lambda x: (-x[2], -x[1], x[0]))
     return records

@@ -1,5 +1,7 @@
 * 2026-05-23 Unification and script consolidation
 
+- Documentation
+  - Added doc/ARCHITECTURE.org as the authoritative ground-up architecture and migration plan; doc/ground-up-redesign.org now points to it.
 - Shared helpers
   - Added =tools/common.py= with =openfile()= and =count_words()= to remove duplicated parsing/aggregation.
 

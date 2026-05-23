@@ -1,5 +1,10 @@
 * 2026-05-23 Unification landing (implemented)
 
+- Single dataset exporter now uses StorageBase.get_latest_splits() to export dataset pairs from any backend.
+- The exporter supports --storage (fs|sqlite|postgres) with --sqlite_path and --pg_dsn (or via environment variables).
+- CuratedIndexDB is now strictly storage-backed; duplicate file-scan methods have been removed.
+- Qt GUI no longer imports file-only ledger/reminders helpers; all operations go through the unified storage abstraction.
+
 - Shared helpers
   - New =tools/common.py= centralizes:
     - =openfile()=: gz-aware file opener.

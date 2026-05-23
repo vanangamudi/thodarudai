@@ -106,77 +106,89 @@ PULLI = "்"  # used to suppress the inherent vowel (for pure consonants)
 VOWEL_TOKENS = sorted(PHONETIC_VOWELS.keys(), key=len, reverse=True)
 CONSONANT_TOKENS = sorted(CONSONANTS.keys(), key=len, reverse=True)
 
+def match_vowel_at(text, j):
+    for vt in VOWEL_TOKENS:
+        if text[j:j+len(vt)].lower() == vt:
+            return vt
+    return None
+
+def match_consonant_at(text, j):
+    for ct in CONSONANT_TOKENS:
+        cand = text[j:j+len(ct)]
+        if cand == ct:
+            return ct
+        if cand.lower() == ct.lower():
+            if cand and ct and cand[0].islower() and ct[0].islower():
+                return ct
+    return None
+
+def flush_pending_with_vowel(output, pending, vowel_token):
+    if pending is not None:
+        output.append(pending + VOWEL_DIACRITICS[vowel_token])
+        return None
+    else:
+        output.append(PHONETIC_VOWELS[vowel_token])
+        return None
+
+def flush_pending_pulli(output, pending):
+    if pending is not None:
+        output.append(pending + PULLI)
+        return None
+    return pending
+
+def flush_pending_raw(output, pending):
+    if pending is not None:
+        output.append(pending)
+        return None
+    return pending
+
+def process_vowel(text, i, pending, output):
+    vt = match_vowel_at(text, i)
+    if vt is None:
+        return False, i, pending
+    pending = flush_pending_with_vowel(output, pending, vt)
+    return True, i + len(vt), pending
+
+def process_consonant(text, i, pending, output):
+    ct = match_consonant_at(text, i)
+    if ct is None:
+        return False, i, pending
+    if pending is not None:
+        output.append(pending + PULLI)
+    pending = CONSONANTS[ct]
+    return True, i + len(ct), pending
+
+def process_other_char(text, i, pending, output):
+    ch = text[i]
+    if ch in string.whitespace or ch in string.punctuation:
+        pending = flush_pending_pulli(output, pending)
+        output.append(ch)
+        return i + 1, pending
+    pending = flush_pending_raw(output, pending)
+    output.append(ch)
+    return i + 1, pending
+
+
 def transliterate(text):
     """
     Transliterates romanized input using a scheme modeled on the Emacs Tamil ITRANS
-    input method. It greedily matches vowel and consonant tokens and attaches vowel diacritics
+    input method. It greedily matches vowel and consonant tokens and attaches vowel
+diacritics
     to a pending consonant. If no vowel follows a consonant, a pulli is appended.
     """
     output = []
     pending = None
     i = 0
-
-    def match_vowel_at(j):
-        for vt in VOWEL_TOKENS:
-            if text[j:j+len(vt)].lower() == vt:
-                return vt
-        return None
-
-    def match_consonant_at(j):
-        for ct in CONSONANT_TOKENS:
-            cand = text[j:j+len(ct)]
-            if cand == ct:
-                return ct
-            if cand.lower() == ct.lower():
-                if cand and ct and cand[0].islower() and ct[0].islower():
-                    return ct
-        return None
-
-    def flush_pending_with_vowel(vt):
-        nonlocal pending
-        if pending is not None:
-            output.append(pending + VOWEL_DIACRITICS[vt])
-            pending = None
-        else:
-            output.append(PHONETIC_VOWELS[vt])
-
-    def flush_pending_pulli():
-        nonlocal pending
-        if pending is not None:
-            output.append(pending + PULLI)
-            pending = None
-
-    def flush_pending_raw():
-        nonlocal pending
-        if pending is not None:
-            output.append(pending)
-            pending = None
-
     while i < len(text):
-        vt = match_vowel_at(i)
-        if vt is not None:
-            flush_pending_with_vowel(vt)
-            i += len(vt)
+        did_vowel, i2, pending = process_vowel(text, i, pending, output)
+        if did_vowel:
+            i = i2
             continue
-
-        ct = match_consonant_at(i)
-        if ct is not None:
-            if pending is not None:
-                output.append(pending + PULLI)
-            pending = CONSONANTS[ct]
-            i += len(ct)
+        did_cons, i2, pending = process_consonant(text, i, pending, output)
+        if did_cons:
+            i = i2
             continue
-
-        ch = text[i]
-        if ch in string.whitespace or ch in string.punctuation:
-            flush_pending_pulli()
-            output.append(ch)
-            i += 1
-        else:
-            flush_pending_raw()
-            output.append(ch)
-            i += 1
-
+        i, pending = process_other_char(text, i, pending, output)
     if pending is not None:
         output.append(pending + PULLI)
     return ''.join(output)

@@ -9,7 +9,7 @@ Grapheme length (glen) is computed via the 'arichuvadi.length()' function provid
 
 """
 import sys
-from tools.profile import Profile, default_profile
+from tools.profile import Profile
 
 def build_arg_parser():
     import argparse

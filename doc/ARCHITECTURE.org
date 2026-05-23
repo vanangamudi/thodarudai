@@ -1,0 +1,268 @@
+#+title: Tamil Word Segmentation Platform — Architecture and Migration Plan
+#+author: Project maintainers
+#+language: en
+
+Introduction
+- Goal: build a multi-user platform for manually segmenting Tamil words into two parts, and to navigate a corpus with fast prefix, suffix, and regex queries.
+- Context: original Qt tool with file storage; target is a Web UI backed by databases (SQLite or Postgres). Keep Qt operable via shared modules and storage abstraction.
+- Scope: system design, canonical data model, API, storage backends, query engine, front-ends, migration plan, testing, and operations.
+
+Functional requirements
+- Corpus
+  - Immutable set of words with attributes =freq= and =glen= (grapheme length).
+  - Invariant: =glen = ari.length(word)=.
+- Segmentation
+  - Multiple user-contributed binary splits per word.
+  - Each split is at a grapheme boundary: =1 <= split_pos < glen=.
+  - Text cache: =left_text= and =right_text= such that =left_text + right_text = word= at the grapheme boundary.
+  - Notes are free-form.
+- Query
+  - Prefix, suffix, and regex filters.
+  - Negative filters: =prefix_not=, =suffix_not=, =regex_not=.
+  - Length filter via =length_spec= (examples: "8-", "4-9", "7").
+  - Ranking order: =glen DESC, freq DESC, word ASC=.
+  - Curated mixing: blend new (no segmentations yet) with curated (has segmentations) by ratio.
+- Multi-user
+  - Writes attributed to an =actor_id= (stored as =profile=).
+  - Reads default to global (all users), optionally scope to "me" or "actor:NAME".
+- Reminders
+  - Per-user set of words to revisit.
+- Summary
+  - Totals (words, curated distinct, remaining distinct, curation entries).
+  - Length distributions for curated and remaining.
+- History
+  - List all segmentations per word, newest first.
+- Observability
+  - Request logs, health endpoint, optional UI event logs.
+
+System components
+- Backend API (FastAPI)
+  - Stateless endpoints:
+    - =/api/query= returns ranked words.
+    - =/api/commit= writes segmentations (DB) or batches+ledger (FS).
+    - =/api/segmentations= lists history for a word, optional scope.
+    - =/api/summary= global or scoped summary.
+    - =/api/reminders= CRUD for reminders and =/api/reminders/results= lookup.
+    - =/api/generate_batch_name= helper.
+    - =/api/health= runtime info.
+  - Future: auth endpoints (=/api/login=, =/api/logout=, =/api/me=).
+- Storage abstraction (=tools/storage.py=)
+  - FileStorage (legacy batches, ledger, reminders).
+  - SqliteStorage and PostgresStorage (canonical DB stores).
+  - Uniform methods:
+    - =write_batch()=, =append_ledger()= (FS compat)
+    - =load_reminders()=, =write_reminders()=
+    - =has_words()=, =ensure_words()=
+    - =query_index()= (DB-side filtering and curated mixing where possible)
+    - =get_latest_splits()= for dataset export
+    - =add_segmentation()=, =list_segmentations()=
+- Indexing layer
+  - WordIndex (list-based) for FS and in-memory flows.
+  - TrieWordIndex (optional) via chorkilai OnDiskTrie for fast prefix/suffix.
+  - DB queries preferred when databases are in play.
+- Frontends
+  - Web UI (React + Vite) is the primary UI.
+  - Qt GUI retained and refactored to share logic via common modules.
+- Utilities
+  - Word index build and load (TSV and SQLite).
+  - Export dataset from latest segmentations.
+  - Tokenizer training and inference.
+
+Canonical data model (DB v2)
+- Tables (SQLite and Postgres; Postgres may use =pg_trgm= for performance):
+
+#+begin_src sql
+-- words: canonical corpus
+CREATE TABLE IF NOT EXISTS words (
+  word TEXT PRIMARY KEY,
+  freq INTEGER NOT NULL,
+  glen INTEGER NOT NULL
+);
+
+-- segmentations: truth source for curation
+CREATE TABLE IF NOT EXISTS segmentations (
+  id BIGSERIAL PRIMARY KEY,              -- INTEGER AUTOINCREMENT in SQLite
+  word TEXT NOT NULL REFERENCES words(word) ON DELETE CASCADE,
+  profile TEXT NOT NULL,                 -- actor_id
+  split_pos INTEGER NOT NULL,            -- 1..glen-1
+  left_text TEXT NOT NULL,
+  right_text TEXT NOT NULL,
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS seg_word_created ON segmentations(word, created_at DESC);
+CREATE INDEX IF NOT EXISTS seg_profile_word ON segmentations(profile, word);
+
+-- ledger: append-only events (optional)
+CREATE TABLE IF NOT EXISTS ledger (
+  id BIGSERIAL PRIMARY KEY,
+  ts TIMESTAMPTZ NOT NULL,
+  profile TEXT,
+  event TEXT NOT NULL,
+  payload JSONB
+);
+
+-- reminders: per-user bag of words
+CREATE TABLE IF NOT EXISTS reminders (
+  profile TEXT NOT NULL,
+  word TEXT NOT NULL,
+  notes TEXT,
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY(profile, word)
+);
+#+end_src
+
+- Invariants
+  - =1 <= split_pos < glen= for the corresponding =word=.
+  - =left_text + right_text = word= at a grapheme boundary.
+  - Multiple segmentations allowed per (profile, word) and globally.
+- Views (optional convenience)
+
+#+begin_src sql
+-- latest segmentation per word (global)
+CREATE VIEW v_latest_segmentation_global AS
+SELECT DISTINCT ON (word)
+  word, profile, split_pos, left_text, right_text, created_at
+FROM segmentations
+ORDER BY word, created_at DESC, id DESC;
+
+-- latest per profile
+CREATE VIEW v_latest_segmentation_by_profile AS
+SELECT DISTINCT ON (profile, word)
+  profile, word, split_pos, left_text, right_text, created_at
+FROM segmentations
+ORDER BY profile, word, created_at DESC, id DESC;
+#+end_src
+
+Indexes and performance notes
+- Postgres
+  - Enable =pg_trgm=:
+    ~CREATE EXTENSION IF NOT EXISTS pg_trgm;~
+  - Trigram index for =LIKE= and regex:
+    ~CREATE INDEX IF NOT EXISTS idx_words_word_trgm ON words USING gin (word gin_trgm_ops);~
+  - Optional suffix optimization:
+    ~CREATE INDEX IF NOT EXISTS idx_words_rev ON words ((reverse(word)));~
+- SQLite
+  - B-tree indexes on =word= and =glen=.
+  - Optional FTS5 mirror for advanced regex (future).
+
+Query engine
+- Inputs
+  - =prefix=, =suffix=, =regex=, =prefix_not=, =suffix_not=, =regex_not=, =length_spec=, =limit=, =curated_ratio=.
+  - Optional =curated_scope= with values "all" (default), "me", "actor:NAME".
+- Normalization
+  - Implemented in =tools.curation_core.normalize_query_fields= and =parse_length_spec=.
+- Ranking
+  - Canonical sort key: =(-glen, -freq, word)= which maps to SQL =ORDER BY glen DESC, freq DESC, word ASC=.
+- Curated mixing
+  - DB mode: do it in SQL where possible.
+  - FS or in-memory mode: sample curated vs new in Python using =mix_curated()=.
+- Probe size
+  - When client-side mixing is needed, probe =min(limit * 5, max(limit + 500, 5000))=.
+
+API design
+- POST =/api/query=
+  - Body: fields listed above.
+  - Returns: ~{ results: [[word, freq, glen], ...], elapsed_ms: N }~ or HTML table when Accept is text/html.
+- POST =/api/commit=
+  - Body: ~edited_rows~ ([[id, word, splits, freq, glen, notes] ...]), optional ~batch~.
+  - DB: parse =splits= into (left_text, right_text, split_pos) and call =add_segmentation()= for each row. Write an optional ledger event.
+  - FS: write TSV batch and append ledger.
+  - Returns: counts and storage paths or tokens.
+- GET =/api/segmentations?word=... [&scope=...] =
+  - Returns the full history of segmentations for the word, newest first, optionally scoped to "me" or "actor:NAME".
+- GET =/api/summary[?scope=all|me|actor:NAME]=
+  - Returns totals and length distributions, default is global.
+- GET/POST =/api/reminders= and GET =/api/reminders/results=
+  - Per-user list management and lookup against the corpus.
+- POST =/api/generate_batch_name=
+  - Utility based on prefix, suffix, and length_spec.
+- GET =/api/health=
+  - Build tag, app mtime, counts, storage info.
+
+Front-end behavior
+- Web UI
+  - Filter panels for prefix, suffix, regex, negative filters, length and limit.
+  - Results with editable splits and notes, only changed rows committed.
+  - Curated ratio slider, curated badges/counts (future), history modal (future).
+  - Keyboard shortcuts for queries, commit, find and replace, reminders.
+- Qt GUI
+  - Shares logic via =tools.curation_core= and =tools.storage=.
+  - FS mode remains supported; DB mode routes commits to =segmentations=.
+
+Migration plan
+- Phase 1: DB enablement
+  - Add =segmentations= table and minimal =get_latest_splits()= in DB stores.
+  - Implement =add_segmentation()= and =list_segmentations()= in =SqliteStorage= and =PostgresStorage=.
+  - In backend, =/api/commit= uses =add_segmentation()= in DB modes; FS path unchanged.
+  - Keep ledger for events, not as truth.
+- Phase 2: Auth and scoping
+  - Add minimal auth, set session =actor_id=, wire it to Storage.profile.
+  - Expose =curated_scope= in queries and =scope= in =/api/summary= and =/api/segmentations=.
+- Phase 3: Query optimization
+  - Enable =pg_trgm= and indexes in Postgres; consider SQLite FTS5 mirror.
+  - Push more filtering into SQL in =query_index()= (negative filters, curated mixing).
+- Phase 4: UX and insights
+  - Curated badges and per-word history in Web UI.
+  - Conflict awareness in UI (warn when a newer segmentation exists).
+- Phase 5: Deprecations
+  - De-emphasize FS ledger as source of truth where DB is available.
+  - Optional deprecation of list indexer in favor of trie or DB-only for production.
+
+Testing strategy
+- Unit tests
+  - =curation_core= (length parsing, filters, mixing), =word_indexer= and =trie_word_indexer=, =tamil_phonetic= transliteration helpers.
+- Integration tests
+  - Storage backends for =query_index()= parity across FS vs DB for common paths.
+  - Endpoints using =httpx= test client.
+- E2E
+  - Basic Web UI flows with Playwright or Cypress.
+- Data migration
+  - Backfill =segmentations= from legacy ledger; idempotent by checking existing rows.
+
+Operations and observability
+- Logs
+  - Request and error logs in backend.
+  - Optional UI event logs in Qt and Web UI.
+- Health
+  - Build tag, app path and mtime, counts, storage parameters.
+- Metrics (future)
+  - Query latency histograms, commit rates, counts by length.
+
+Directory layout (high level)
+- =tools/=: common helpers, storage, indexers, exporters, tokenizer, GUI
+- =webui1/=: FastAPI app and frontend
+- =lib/chorkilai/mlm/=: trie implementation
+- =doc/=: design and migration docs
+
+Runbook (quick start)
+- Build TSV
+#+begin_src sh
+python -m tools.build_word_index --profile default --base_dir data --out data/word-index.tsv
+#+end_src
+- Load to SQLite
+#+begin_src sh
+python -m tools.load_words sqlite --files data/word-index.tsv --db_path data/curation.db
+#+end_src
+- Start backend (SQLite example)
+#+begin_src sh
+STORAGE_BACKEND=sqlite SQLITE_PATH=data/curation.db python webui1/app.py
+#+end_src
+- Start frontend
+#+begin_src sh
+cd webui1/frontend && npm install && npm run dev
+#+end_src
+- Export dataset
+#+begin_src sh
+python -m tools.export_dataset --profile default
+#+end_src
+- Train tokenizer
+#+begin_src sh
+python -m tools.train_tokenizer --profile default --epochs 5
+#+end_src
+
+Open questions
+- Recommended segmentation: how to represent admin-endorsed or consensus choice.
+- Conflict surfacing: UI strategies for awareness without blocking commits.
+- Suffix optimization in SQLite: FTS vs reverse(text) indexing approach.
+- Auth model: minimal session vs external provider.

@@ -28,6 +28,7 @@ The indexes serve as the backbone for fast word lookups. There are two main appr
 To generate the main =word-index.tsv= file from one or more input word files, run:
 
    =python tools/build_word_index.py [files...] [--out output_file] [--profile profile_name] [--base_dir base_directory]=
+Note: Grapheme length uses arichuvadi; if =ari.length()= is not available, a safe fallback counts grapheme tokens.
 
 If no input files are specified, the tool uses the default profile's word list specified in the profile.
 
@@ -100,6 +101,8 @@ The Web UI is composed of a backend API (built with FastAPI) and a front-end app
 To run the backend, execute:
 
    =python webui1/app.py=
+For SQLite mode (uses the same API/endpoints):
+=STORAGE_BACKEND=sqlite SQLITE_PATH=./data/curation.db python webui1/app.py=
 
 This will start a FastAPI server on port 8000. The backend reads the word-index and ledger files (or a SQLite database if configured) and exposes endpoints for word query, commit, summary, and reminders.
 
@@ -131,6 +134,12 @@ The application will read the profile\'s files (such as =word-index.tsv=, =ledge
 You can also choose between file-based storage and SQLite storage via the command-line options:
    - Use =--storage fs= for file-based storage (the default).
    - Use =--storage sqlite= and also specify =--sqlite_path= if needed.
+   
+SQLite mode:
+=python tools/gui_qt_app.py --storage sqlite --sqlite_path ./data/curation.db --profile default --base_dir ./data=
+
+Postgres mode:
+=python tools/gui_qt_app.py --storage postgres --pg-dsn "postgresql://user:pass@host:5432/db" --profile default --base_dir ./data=
 
 The GUI supports launching new windows with cloned query parameters, modifying splits for words, and committing edits that update the ledger and curated index.
 
