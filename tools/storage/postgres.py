@@ -187,6 +187,8 @@ class PostgresStorage(StorageBase):
                 return ok
             except Exception:
                 return False
+    # UPSERT: This method uses an UPSERT query to update (or insert) word records so that duplicates are prevented.
+    # Note: The FastAPI app seeds words only once on empty DB; to refresh Postgres, run a loader that calls ensure_words.
     def ensure_words(self, records: Iterable[Tuple[str,int,int]]) -> None:
         recs = list(records or [])
         if not recs:

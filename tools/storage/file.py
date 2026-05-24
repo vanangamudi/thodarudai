@@ -21,15 +21,15 @@ class FileStorage:
                 print("\t".join(r), file=f)
             return path
     def append_ledger(self, tsv_lines: List[str], batch_name: str) -> str:
-        logger.info("append_ledger: path=%s batch=%s", self.ledger_path, batch_name)
+        # For the filesystem backend, overwrite the ledger TSV rather than append,
+        # so that WordIndex reads a unique aggregated TSV (one row per word) without duplicates.
+        logger.info("append_ledger: overwriting path=%s batch=%s", self.ledger_path, batch_name)
         import fcntl, json as _json
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        write_header = not os.path.exists(self.ledger_path) or os.path.getsize(self.ledger_path) == 0
-        with open(self.ledger_path, "a", encoding="utf-8") as lf:
+        with open(self.ledger_path, "w", encoding="utf-8") as lf:
             fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
             try:
-                if write_header:
-                    lf.write("timestamp\tbatch\tid\tword\tsplits\tnotes\n")
+                lf.write("timestamp\tbatch\tid\tword\tsplits\tnotes\n")
                 for ln in tsv_lines[1:]:
                     if not ln.strip():
                         continue
@@ -41,8 +41,7 @@ class FileStorage:
                     lf.write(f"{ts}\t{batch_name}\t{rec_id or word}\t{word}\t{splits}\t{notes}\n")
             finally:
                 fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-        appended = max(0, len(tsv_lines) - 1)
-        logger.info("append_ledger: appended=%d path=%s", appended, os.path.abspath(self.ledger_path))
+        logger.info("append_ledger: overwritten path=%s", os.path.abspath(self.ledger_path))
         return os.path.abspath(self.ledger_path)
 
     def load_reminders(self) -> Set[str]:

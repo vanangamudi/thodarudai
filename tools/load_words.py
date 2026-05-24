@@ -53,7 +53,8 @@ def save_words_to_sqlite(records, db_path):
                 glen INTEGER
             )
         """)
-        # Insert or update records in batches (much faster than per-row executes)
+        # UPSERT: this SQL statement inserts new words and updates the freq/glen
+        # of existing words so that reloading a new TSV refreshes values without duplicates.
         sql = (
             "INSERT INTO words(word, freq, glen) VALUES (?,?,?) "
             "ON CONFLICT(word) DO UPDATE SET freq=excluded.freq, glen=excluded.glen"
