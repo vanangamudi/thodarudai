@@ -1,0 +1,100 @@
+* Download cholloadai-2021
+Using the following torrent magnet link, or from directly from [[archive.org/download/cholloadai-2021.txt][cholloadai-2021.txt]] archive.org.
+
+#+begin_src
+magnet:?xt=urn:btih:1d8c150185d44d15d56f5e095851870cac035267&dn=cholloadai-2021.txt&tr=http%3A%2F%2Fbt1.archive.org%3A6969%2Fannounce&tr=http%3A%2F%2Fbt2.archive.org%3A6969%2Fannounce&ws=https%3A%2F%2Farchive.org%2Fdownload%2F&ws=http%3A%2F%2Fia601500.us.archive.org%2F12%2Fitems%2F
+#+end_src
+
+#+begin_src shell :results code
+  ls -al ~/tharavu/cholloadai-2021.txt/
+#+end_src
+
+#+RESULTS:
+#+begin_src shell
+total 3274916
+drwxr-xr-x 3 vanangamudi vanangamudi     4096 May 24 12:11 .
+drwxrwxr-x 3 vanangamudi vanangamudi     4096 May 24 12:11 ..
+-rw-r--r-- 1 vanangamudi vanangamudi 45020436 May 24 11:40 cholloadai-2021.txt.00.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 43264933 May 24 11:40 cholloadai-2021.txt.01.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 42632276 May 24 11:41 cholloadai-2021.txt.02.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 44471893 May 24 11:41 cholloadai-2021.txt.03.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45776809 May 24 11:41 cholloadai-2021.txt.04.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 42909524 May 24 11:41 cholloadai-2021.txt.05.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46819473 May 24 11:40 cholloadai-2021.txt.06.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 37773111 May 24 11:40 cholloadai-2021.txt.07.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 38008585 May 24 11:41 cholloadai-2021.txt.08.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46045626 May 24 11:40 cholloadai-2021.txt.09.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 48998908 May 24 11:41 cholloadai-2021.txt.10.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 42735345 May 24 11:40 cholloadai-2021.txt.11.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46503926 May 24 11:41 cholloadai-2021.txt.12.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46601376 May 24 11:41 cholloadai-2021.txt.13.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 42208915 May 24 11:41 cholloadai-2021.txt.14.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46955688 May 24 11:41 cholloadai-2021.txt.15.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 44125957 May 24 11:41 cholloadai-2021.txt.16.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 44221786 May 24 11:41 cholloadai-2021.txt.17.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 47097203 May 24 11:39 cholloadai-2021.txt.18.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 48458010 May 24 11:41 cholloadai-2021.txt.19.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 47526821 May 24 11:40 cholloadai-2021.txt.20.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 48113887 May 24 11:40 cholloadai-2021.txt.21.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 53790644 May 24 11:41 cholloadai-2021.txt.22.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45237928 May 24 11:41 cholloadai-2021.txt.23.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45923409 May 24 11:41 cholloadai-2021.txt.24.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 52159266 May 24 11:40 cholloadai-2021.txt.25.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46227409 May 24 11:41 cholloadai-2021.txt.26.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45872533 May 24 11:40 cholloadai-2021.txt.27.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 44995240 May 24 11:41 cholloadai-2021.txt.28.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 40670105 May 24 11:41 cholloadai-2021.txt.29.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 47894012 May 24 11:40 cholloadai-2021.txt.30.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 43682599 May 24 11:40 cholloadai-2021.txt.31.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46527517 May 24 11:41 cholloadai-2021.txt.32.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 47281137 May 24 11:39 cholloadai-2021.txt.33.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46804091 May 24 11:40 cholloadai-2021.txt.34.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46509813 May 24 11:40 cholloadai-2021.txt.35.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46978748 May 24 11:40 cholloadai-2021.txt.36.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46465787 May 24 11:40 cholloadai-2021.txt.37.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 48214903 May 24 11:41 cholloadai-2021.txt.38.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 47775889 May 24 11:41 cholloadai-2021.txt.39.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45902689 May 24 11:40 cholloadai-2021.txt.40.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45208809 May 24 11:41 cholloadai-2021.txt.41.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 44447757 May 24 11:39 cholloadai-2021.txt.42.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 55524664 May 24 11:40 cholloadai-2021.txt.43.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 48838465 May 24 11:40 cholloadai-2021.txt.44.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 49353511 May 24 11:41 cholloadai-2021.txt.45.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 47988252 May 24 11:41 cholloadai-2021.txt.46.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 52837592 May 24 11:40 cholloadai-2021.txt.47.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45438492 May 24 11:40 cholloadai-2021.txt.48.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 50156102 May 24 11:41 cholloadai-2021.txt.49.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46185373 May 24 11:40 cholloadai-2021.txt.50.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 43832578 May 24 11:39 cholloadai-2021.txt.51.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 42584785 May 24 11:40 cholloadai-2021.txt.52.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 44527746 May 24 11:40 cholloadai-2021.txt.53.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45586221 May 24 11:40 cholloadai-2021.txt.54.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45826112 May 24 11:39 cholloadai-2021.txt.55.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46462622 May 24 11:40 cholloadai-2021.txt.56.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 51646365 May 24 11:41 cholloadai-2021.txt.57.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45940129 May 24 11:41 cholloadai-2021.txt.58.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 48110439 May 24 11:40 cholloadai-2021.txt.59.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 49054590 May 24 11:41 cholloadai-2021.txt.60.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46686773 May 24 11:41 cholloadai-2021.txt.61.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45377133 May 24 11:40 cholloadai-2021.txt.62.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 46077971 May 24 11:40 cholloadai-2021.txt.63.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 51659419 May 24 11:41 cholloadai-2021.txt.64.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 49373712 May 24 11:41 cholloadai-2021.txt.65.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45351124 May 24 11:40 cholloadai-2021.txt.66.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45872109 May 24 11:41 cholloadai-2021.txt.67.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 45132857 May 24 11:40 cholloadai-2021.txt.68.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 47981328 May 24 11:41 cholloadai-2021.txt.69.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 44021034 May 24 11:40 cholloadai-2021.txt.70.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 48132501 May 24 11:40 cholloadai-2021.txt.71.gz
+-rw-r--r-- 1 vanangamudi vanangamudi 12617212 May 24 11:41 cholloadai-2021.txt.72.gz
+-rw-r--r-- 1 vanangamudi vanangamudi   323584 May 24 11:22 cholloadai-2021.txt_meta.sqlite
+-rw-r--r-- 1 vanangamudi vanangamudi     1597 May 24 11:22 cholloadai-2021.txt_meta.xml
+drwxr-xr-x 2 vanangamudi vanangamudi     4096 May 24 12:11 .____padding_file
+#+end_src
+
+* Clone =kkk=
+#+begin_src shell :results output code
+  git clone git@github.com:vanangamudi/kkk ~/code/thodarudai/subrepos/kkk
+  cd ~/code/thodarudai/subrepos/kkk
+  pip install -e .
+#+end_src
