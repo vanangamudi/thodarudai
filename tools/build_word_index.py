@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """Build Word Index Tool
 
-This script builds a searchable word index TSV file from one or more input word files.  If no input files are provided, it uses the default profile's word list based on the specified profile name and base directory. Each input file is expected to be a TSV with at least the columns: word, freq, glen The script reads each file (supporting plain text or gzipped files), updates a frequency count for each word, and outputs a new TSV with the header
-
-word  freq  glen
-
-Grapheme length (glen) is computed via the 'arichuvadi.length()' function provided by the arichuvadi package.
+This script builds a word index TSV by merging precomputed TSVs with columns: word, freq, glen.
+No raw text counting is performed.
 
 """
 import sys
@@ -14,6 +11,7 @@ import time
 logger = logging.getLogger("build_word_index")
 
 from tools.profile import Profile
+from tools.common import aggregate_precomputed
 
 def build_arg_parser():
     import argparse
@@ -28,8 +26,6 @@ def build_arg_parser():
 
 
 def main():
-    from tools.profile import Profile
-    from tools.common import count_words
     ap = build_arg_parser()
     args = ap.parse_args()
     if not logging.getLogger().handlers:
@@ -42,7 +38,7 @@ def main():
                     args.profile, args.base_dir, (args.out or "(stdout)"), len(files))
         logger.debug("input files: %s", files)
         t0 = time.perf_counter()
-        records = count_words(files)
+        records = aggregate_precomputed(files)
         dur_ms = int((time.perf_counter() - t0) * 1000)
         logger.info("aggregated %d unique words in %d ms", len(records), dur_ms)
 

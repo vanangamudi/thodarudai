@@ -4,6 +4,7 @@ import arichuvadi as ari
 from collections import Counter
 import time
 import logging
+from typing import Tuple, Dict, Iterable
 logger = logging.getLogger("common")
 _GLEN_FALLBACK_WARNED = False
 
@@ -57,3 +58,29 @@ def count_words(filepaths):
     dur_ms = int((time.perf_counter() - t0) * 1000)
     logger.info("count_words: aggregated=%d dur_ms=%d", len(records), dur_ms)
     return records
+
+def iter_word_freq_glen_from_tsv(path: str):
+    with openfile(path, "rt", encoding="utf-8") as f:
+        hdr = ["word", "freq", "glen"]
+        idx = {h: i for i, h in enumerate(hdr)}
+        for ln in f:
+            if not ln.strip():
+                continue
+            c = ln.rstrip("\n").split("\t")
+            yield c[idx["word"]], int(c[idx["freq"]]), int(c[idx["glen"]])
+
+def aggregate_precomputed(files: Iterable[str]):
+    acc: Dict[str, Tuple[int, int]] = {}
+    for p in files:
+        logger.info("aggregate: reading %s", p)
+        for w, fr, gl in iter_word_freq_glen_from_tsv(p):
+            if w in acc:
+                old_fr, old_gl = acc[w]
+                if old_gl != gl:
+                    logger.debug("aggregate: glen mismatch for %r: have=%d got=%d; keeping existing", w, old_gl, gl)
+                acc[w] = (old_fr + fr, old_gl)
+            else:
+                acc[w] = (fr, gl)
+    out = [(w, fr, gl) for w, (fr, gl) in acc.items()]
+    out.sort(key=lambda x: (x[2], -x[1], x[0]))
+    return out

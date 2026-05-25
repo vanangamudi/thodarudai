@@ -64,6 +64,19 @@ class PostgresStorage(StorageBase):
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS seg_word_created ON segmentations(word, created_at DESC)")
             cur.execute("CREATE INDEX IF NOT EXISTS seg_profile_word ON segmentations(profile, word)")
+            try:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+            except Exception:
+                logger.info("pg_trgm not available or insufficient privileges; continuing without it")
+            try:
+                cur.execute("CREATE INDEX IF NOT EXISTS words_word_trgm ON words USING GIN (word gin_trgm_ops)")
+                cur.execute("CREATE INDEX IF NOT EXISTS words_word_prefix ON words (word text_pattern_ops)")
+            except Exception:
+                pass
+            try:
+                cur.execute("CREATE INDEX IF NOT EXISTS words_rank_idx ON words (glen DESC, freq DESC, word ASC)")
+            except Exception:
+                pass
 
     def write_batch(self, edited_rows: List[Row], batch_name: str) -> str:
         logger.info("write_batch: batch=%s rows=%d profile=%s", batch_name, len(edited_rows), self.profile)
@@ -194,16 +207,33 @@ class PostgresStorage(StorageBase):
         if not recs:
             return
         with self._conn() as cx, cx.cursor() as cur:
-            logger.info("ensure_words: method=%s", "execute_batch" if execute_batch else "executemany")
             cur.execute("CREATE TABLE IF NOT EXISTS words(word TEXT PRIMARY KEY, freq INTEGER, glen INTEGER)")
-            sql = (
-                "INSERT INTO words(word,freq,glen) VALUES (%s,%s,%s) "
-                "ON CONFLICT(word) DO UPDATE SET freq=EXCLUDED.freq, glen=EXCLUDED.glen"
-            )
-            if execute_batch:
-                execute_batch(cur, sql, recs, page_size=10000)
+            THRESH = 50000
+            if len(recs) >= THRESH:
+                import io, csv
+                cur.execute("CREATE TEMP TABLE tmp_words(word TEXT, freq INTEGER, glen INTEGER) ON COMMIT DROP")
+                buf = io.StringIO()
+                w = csv.writer(buf)
+                for (wrd, fr, gl) in recs:
+                    w.writerow([wrd, int(fr), int(gl)])
+                buf.seek(0)
+                cur.copy_expert("COPY tmp_words(word,freq,glen) FROM STDIN WITH (FORMAT csv)", buf)
+                cur.execute("""
+                    INSERT INTO words(word,freq,glen)
+                    SELECT word, freq, glen FROM tmp_words
+                    ON CONFLICT(word) DO UPDATE SET freq=EXCLUDED.freq, glen=EXCLUDED.glen
+                """)
+                logger.info("ensure_words: COPY+UPSERT upserted=%d", len(recs))
             else:
-                cur.executemany(sql, recs)
+                sql = (
+                    "INSERT INTO words(word,freq,glen) VALUES (%s,%s,%s) "
+                    "ON CONFLICT(word) DO UPDATE SET freq=EXCLUDED.freq, glen=EXCLUDED.glen"
+                )
+                if execute_batch:
+                    execute_batch(cur, sql, recs, page_size=10000)
+                else:
+                    cur.executemany(sql, recs)
+                logger.info("ensure_words: batch upserted=%d", len(recs))
 
     def query_index(self, prefix: str, suffix: str, regex: str,
                     prefix_not: str, suffix_not: str, regex_not: str,
