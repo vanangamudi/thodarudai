@@ -1,0 +1,16 @@
+[Unit]
+Description=Tamil Splits FastAPI
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/thodarudai
+EnvironmentFile=/etc/thodarudai.env
+ExecStart=/opt/thodarudai/.venv/bin/python -m uvicorn webui1.app:app --host ${APP_HOST} --port ${APP_PORT}
+Restart=on-failure
+RestartSec=2
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target

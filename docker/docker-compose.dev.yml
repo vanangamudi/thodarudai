@@ -1,0 +1,14 @@
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile.dev
+    container_name: thodarudai-frontend
+    environment:
+      VITE_API_BASE: http://localhost:8000
+    depends_on:
+      web:
+        condition: service_started
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./webui1/frontend:/app:delegated
