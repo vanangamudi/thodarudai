@@ -1,0 +1,82 @@
+* User Guide
+
+This guide explains how to bootstrap data, run the UIs, and use the main features.
+
+** Profiles and paths
+
+- Profiles define where files live via =tools/profile.py=
+- The default profile is "default"; the base directory defaults to the current working directory.
+- Important paths per profile include:
+  - =word-index.tsv=, =batches/=, =ledger.tsv=, =ui-log.tsv=, =reminders.tsv=, =datasets/=, =models/tokenizer/=
+
+** Build or merge a word index
+
+- Merge TSVs that already have the header =word  freq  glen= into a single index:
+  ~python -m tools.build_word_index --profile default --base_dir ./data --out ./data/word-index.tsv~
+- If you already have a complete TSV, you may skip this step.
+
+** Optional: load words into SQLite
+
+- Load your TSV into a SQLite database table named =words=:
+  ~python -m tools.load_words sqlite --files ./data/word-index.tsv --db_path ./data/curation.db~
+- SQLite settings used:
+  - WAL mode, NORMAL synchronous, and a busy timeout for concurrent readers.
+
+** Run the Web UI
+
+- Backend (FastAPI)
+  - Filesystem mode:
+    ~python webui1/app.py~
+  - SQLite mode:
+    ~STORAGE_BACKEND=sqlite SQLITE_PATH=./data/curation.db python webui1/app.py~
+- Frontend (Vite + React):
+  ~cd webui1/frontend && npm install && npm run dev~
+- Exposed endpoints include:
+  - =/api/query=, =/api/commit=, =/api/summary=, =/api/reminders=, =/api/reminders/results=, and =/api/health=
+
+** Run the Qt GUI
+
+- Filesystem mode:
+  ~python tools/gui_qt_app.py --profile default --base_dir ./data~
+- SQLite mode:
+  ~python tools/gui_qt_app.py --storage sqlite --sqlite_path ./data/curation.db --profile default --base_dir ./data~
+
+- Indexers:
+  - List-based (default) via =tools/word_indexer.WordIndex=
+  - Trie-based via =tools/trie_word_indexer.TrieWordIndex= (enable using ~--indexer trie~)
+
+- Common workflow:
+  1. Enter "Prefix", "Suffix", or "Regex" and their corresponding "Exclude" fields if needed.
+  2. Set the "Length" (e.g., "8-", "4-9", "7") and "Limit".
+  3. Click Query.
+  4. Edit the "splits" column for the selected rows.
+  5. Click Commit to write a batch under =batches/= and append a summary to =ledger.tsv=.
+
+- Reminders:
+  - Toggle reminders for selected rows (Alt+M) and view all reminders (Alt+B).
+
+- Shortcuts (subset):
+  - Ctrl+S to commit, Alt+P/S/R to focus various fields, Alt+F/G for find and replace, Alt+L for length, Alt+I for limit, Alt+Q to query.
+
+** Optional: trie-based index build
+
+- Build forward and reverse tries from =word-index.tsv=:
+  ~python -m tools.trie_word_indexer --profile default --base_dir ./data --build --overwrite --pbar~
+- Query test:
+  ~python -m tools.trie_word_indexer --profile default --base_dir ./data --query_prefix க --limit 20~
+
+** Export dataset and train tokenizer
+
+- Export a dataset of the latest curated splits:
+  ~python -m tools.export_dataset --profile default --base_dir ./data --out ./data/tokenizer-YYYYMMDDTHHMMSS.tsv~
+- Train a small seq2seq model:
+  ~python -m tools.train_tokenizer --profile default --base-dir ./data --epochs 5~
+
+** Canonical ranking and filters
+
+- Canonical order: =glen DESC, freq DESC, word ASC=
+- Length parsing examples:
+  - "4-9"  → min_len=4, max_len=9
+  - "4-"   → min_len=4 with no max
+  - "7"    → exactly 7
+- Negative filters exclude matches for prefix, suffix, or regex.

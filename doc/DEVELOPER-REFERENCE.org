@@ -1,0 +1,62 @@
+* Developer Reference
+
+This is a compact reference for the codebase structure, core modules, and conventions. Older deep-dive docs are indexed in "DOCS-ARCHIVE-INDEX.org".
+
+** Architecture snapshot
+
+- Storage abstraction in =tools/storage/=
+  - =StorageBase= interface defined in =tools/storage/__init__.py=
+  - =FileStorage= in =tools/storage/file.py=
+  - =SqliteStorage= in =tools/storage/sqlite.py=
+  - =PostgresStorage= in =tools/storage/postgres.py=
+
+- Word indexers
+  - List indexer in =tools/word_indexer.py=
+  - Trie indexer in =tools/trie_word_indexer.py= (built on top of =OnDiskTrie=)
+
+- Curation
+  - Core helpers in =tools/curation_core.py=
+  - Curated index implementation in =tools/curation_index.py= (supports file-based and DB-backed curation)
+
+- Frontends
+  - Web backend in =webui1/app.py= and React frontend in =webui1/frontend=
+  - Qt GUI in =tools/gui_qt_app.py=
+
+- Vendored trie
+  - Located in "lib/chorkilai/mlm/chorkilai" containing =Trie= and =OnDiskTrie=
+
+** Canonical data formats
+
+- Word index TSV: header =word  freq  glen=
+- Batch TSV: header =id  word  splits  freq  glen  notes=
+- Ledger TSV: header =timestamp  batch  id  word  splits  notes=
+- Dataset TSV: header =src  tgt=
+
+** Key APIs
+
+- Storage API:
+  - =query_index(prefix, suffix, regex, prefix_not, suffix_not, regex_not, min_len, max_len, limit, curated_ratio)= returns a list of (word, freq, glen)
+  - =add_segmentation(word, left_text, right_text, split_pos, notes)=
+  - =list_segmentations(word, scope)=
+
+- GUI commit flow:
+  - Calls storage methods for writing batches and updating the curated index incrementally.
+
+** Ranking and filtering
+
+- Canonical sort key: =(-glen, -freq, word)=
+- Length parsing and curated mixing implemented in =tools/curation_core.py=
+- Negative filters can be applied either in Python or pushed to storage backends when supported
+
+** Testing and utilities
+
+- Function length report:
+  ~python -m tools.function_lengths tools/gui_qt_app.py --top 25~
+- Trie build performance evaluation:
+  ~python -m tools.trie_word_indexer --profile default --base_dir ./data --build --parallel --overwrite --pbar~
+
+** Conventions
+
+- Use =...= for code identifiers and ~...~ for inline code in documentation.
+- TSV files always begin with a header line.
+- Shared helpers in =tools/curation_core.py= should be used across backends and the GUI to ensure consistency.

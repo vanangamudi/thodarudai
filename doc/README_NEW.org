@@ -1,0 +1,65 @@
+* Tamil Splits Toolkit — Overview and Quick Start
+
+This repo provides tools to:
+- build and load a word index with columns =word  freq  glen=
+- curate "splits" for words in a GUI or Web UI
+- export datasets and train a small tokenizer model
+- optionally use a trie-based index for fast prefix and suffix queries
+
+This document is the new entry point. Older documents are preserved and indexed in "DOCS-ARCHIVE-INDEX.org".
+
+** Quick start
+
+1) Build or prepare a word index TSV
+- The index is a TSV with header =word  freq  glen=
+- Merge precomputed TSVs:
+  ~python -m tools.build_word_index --profile default --base_dir ./data --out ./data/word-index.tsv~
+
+2) Optional: load to SQLite
+  ~python -m tools.load_words sqlite --files ./data/word-index.tsv --db_path ./data/curation.db~
+
+3) Run Web UI backend
+- Filesystem mode:
+  ~python webui1/app.py~
+- SQLite mode:
+  ~STORAGE_BACKEND=sqlite SQLITE_PATH=./data/curation.db python webui1/app.py~
+
+4) Run frontend
+  ~cd webui1/frontend && npm install && npm run dev~
+
+5) Run Qt GUI
+- Filesystem:
+  ~python tools/gui_qt_app.py --profile default --base_dir ./data~
+- SQLite:
+  ~python tools/gui_qt_app.py --storage sqlite --sqlite_path ./data/curation.db --profile default --base_dir ./data~
+
+6) Optional: build tries for fast prefix and suffix
+  ~python -m tools.trie_word_indexer --profile default --base_dir ./data --build --overwrite --pbar~
+
+** Data layout per profile
+
+Under =<base_dir>/<profile>/=:
+- =word-index.tsv=  TSV with =word  freq  glen=
+- =batches/=        curated batch TSVs, header =id  word  splits  freq  glen  notes=
+- =ledger.tsv=      append-only entries for batches and "__SUMMARY__"
+- =ui-log.tsv=      UI telemetry from the GUI
+- =reminders.tsv=   reminder words
+- =datasets/=       exported datasets for model training
+- =models/tokenizer/=  saved models and vocabs
+
+** Common commands
+
+- Build index TSV:
+  ~python -m tools.build_word_index --profile default --base_dir ./data --out ./data/word-index.tsv~
+- Load words into SQLite:
+  ~python -m tools.load_words sqlite --files ./data/word-index.tsv --db_path ./data/curation.db~
+- Export dataset:
+  ~python -m tools.export_dataset --profile default --base_dir ./data --out ./data/tokenizer-YYYYMMDDTHHMMSS.tsv~
+- Train tokenizer:
+  ~python -m tools.train_tokenizer --profile default --base-dir ./data --epochs 5~
+
+** Where to read more
+
+- User guide: "USER-GUIDE.org"
+- Developer reference: "DEVELOPER-REFERENCE.org"
+- Archive of legacy docs: "DOCS-ARCHIVE-INDEX.org"

@@ -1,0 +1,22 @@
+* Documentation Archive Index
+
+Older documents are preserved for history and deep dives. Start with "=README_NEW.org=" and "=USER-GUIDE.org=" unless you need legacy details.
+
+- 20260523T1236--overall-architecture.org
+- 20260523T1238--project-documentation.org
+- 20260523T1241--code-refactor.org
+- 20260412T1510--project-overview.org
+- 20260408T2133-project-overview.org
+- 20260409T1214--data-files-generated.org
+- 20260411T0024--three-days-summary.org
+- ground-up-redesign.org
+- ARCHITECTURE.org
+- 20260412T1242--chorkilai.org
+- YENNAIPADI.org
+- KURI.org
+- VARALARU.org
+
+Notes:
+- Keep all existing documents unchanged.
+- Use org-mode native formatting, =...= for verbatim identifiers, and ~...~ for inline code.
+- Use plain quotes "" and avoid unnecessary wrapping of headings.
