@@ -46,6 +46,9 @@ REMINDERS_PATH = os.path.abspath(PROF.reminders_path)
 STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "fs")  # 'fs' or 'sqlite'
 SQLITE_PATH = os.environ.get("SQLITE_PATH", os.path.abspath("data/curation.db"))
 POSTGRES_DSN = os.environ.get("POSTGRES_DSN", "")
+APP_HOST = os.environ.get("APP_HOST", "127.0.0.1")
+APP_PORT = int(os.environ.get("APP_PORT", "8000"))
+APP_RELOAD = os.environ.get("APP_RELOAD", "0") == "1"
 # Unified storage abstraction: instantiate the storage backend below based on STORAGE_BACKEND
 STORAGE = None
 
@@ -80,16 +83,16 @@ def _seed_db_words_if_empty(storage, wordlist_path):
         return
     try:
         if not storage.has_words() and os.path.exists(wordlist_path):
-            recs = []
-            with open(wordlist_path, "r", encoding="utf-8") as f:
-                hdr = f.readline().strip().split("\t")
-                idx = {h: i for i, h in enumerate(hdr)}
-                for ln in f:
-                    if not ln.strip():
-                        continue
-                    c = ln.rstrip("\n").split("\t")
-                    recs.append((c[idx["word"]], int(c[idx["freq"]]), int(c[idx["glen"]])))
-            storage.ensure_words(recs)
+            CHUNK = 200000
+            buf = []
+            from tools.common import iter_word_freq_glen_from_tsv
+            for w, fr, gl in iter_word_freq_glen_from_tsv(wordlist_path):
+                buf.append((w, fr, gl))
+                if len(buf) >= CHUNK:
+                    storage.ensure_words(buf)
+                    buf = []
+            if buf:
+                storage.ensure_words(buf)
     except Exception as e:
         logger.warning("Seeding DB words failed: %s", e)
 
@@ -193,9 +196,10 @@ def _update_curated_after_commit(tsv_lines):
 app = FastAPI(title="Tamil Splits Web UI")
 from fastapi.middleware.cors import CORSMiddleware
 
+ALLOW_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],  # Adjust according to your front-end URL in production.
+    allow_origins=[o.strip() for o in ALLOW_ORIGINS if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -447,4 +451,4 @@ def get_summary():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run(app, host=APP_HOST, port=APP_PORT, reload=APP_RELOAD)

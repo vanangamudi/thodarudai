@@ -748,11 +748,7 @@ class MainWindow(QMainWindow):
         self.dirty = bool(self.edited_ids)
 
     def _parse_split_for_commit(self, word, splits):
-<<<<<<< HEAD
-        if not splits or "-" not in splits:
-=======
         if "-" not in (splits or ""):
->>>>>>> 5062a46 (frontend fixup; segmentations are properly commited to the database)
             return None
         left, right = [x.strip() for x in splits.split("-", 1)]
         if not left or not right:
@@ -803,11 +799,7 @@ class MainWindow(QMainWindow):
                 self.log_ui_event("COMMIT", {"batch": batch_name, "saved_rows": saved, "mode": "db"})
                 QMessageBox.information(self, "Commit", f"Committed {saved} edited row(s) to database")
             else:
-<<<<<<< HEAD
-                # FS mode
-=======
                 # FS mode: write batch TSV + append file ledger
->>>>>>> 5062a46 (frontend fixup; segmentations are properly commited to the database)
                 filepath, tsv_lines = self._write_batch_file(batch_name, edited_rows)
                 self._refresh_curated_and_broadcast(tsv_lines)
                 self.append_summary_ledger(batch_name)
@@ -1536,6 +1528,7 @@ class MainWindow(QMainWindow):
 
     def new_window_from_text(self, kind, text):
         """Spawn a new window using 'text' as prefix/suffix/regex or their negatives."""
+        kind = (kind or "").replace("_", " ")
         params = self._collect_query_params()
         if kind == "prefix":
             params["prefix"] = text; params["suffix"] = ""; params["regex"] = ""

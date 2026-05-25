@@ -20,7 +20,6 @@ from tools.profile import Profile
 from tools.common import aggregate_precomputed
 import logging
 logger = logging.getLogger("load_words")
-from tools.storage.postgres import save_words_to_postgres
 
 # Reuse the openfile helper from build_word_index.py:
 
@@ -39,68 +38,6 @@ def save_words_to_file(records, out_path):
     logger.info("save_words_to_file: wrote=%d dur_ms=%d path=%s", len(records), dur_ms, abs_path)
     return abs_path
 
-def save_words_to_sqlite(records, db_path, chunk=10000, journal="AUTO"):
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    cx = sqlite3.connect(db_path, timeout=60)
-    try:
-        try:
-            # Helper to attempt setting journal mode without aborting the rest
-            jm = ""
-            def _set_journal(mode: str):
-                nonlocal jm
-                try:
-                    v = (cx.execute(f"PRAGMA journal_mode={mode}").fetchone() or [""])[0]
-                except Exception:
-                    v = ""
-                if v:
-                    jm = v
-
-            # Pragmas and journal mode selection
-            cx.execute("PRAGMA busy_timeout=60000")
-
-            want = (journal or "AUTO").upper()
-            if want in ("WAL", "AUTO"):
-                _set_journal("WAL")
-            if want in ("TRUNCATE", "AUTO") and str(jm).lower() not in ("wal",):
-                _set_journal("TRUNCATE")
-            if want in ("DELETE", "AUTO") and str(jm).lower() not in ("wal", "truncate"):
-                _set_journal("DELETE")
-            if want == "OFF" and not jm:
-                _set_journal("OFF")
-
-            for stmt in ("PRAGMA synchronous=NORMAL",
-                         "PRAGMA cache_size=-200000",
-                         "PRAGMA temp_store=MEMORY"):
-                try:
-                    cx.execute(stmt)
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning("save_words_to_sqlite: PRAGMA setup non-fatal error: %s", e)
-
-        logger.info("save_words_to_sqlite: journal_mode=%s chunk=%d", str(jm).lower(), int(chunk))
-
-        cx.execute("""
-            CREATE TABLE IF NOT EXISTS words (
-                word TEXT PRIMARY KEY,
-                freq INTEGER,
-                glen INTEGER
-            )
-        """)
-        sql = (
-            "INSERT INTO words(word, freq, glen) VALUES (?,?,?) "
-            "ON CONFLICT(word) DO UPDATE SET freq=excluded.freq, glen=excluded.glen"
-        )
-        CHUNK = int(chunk) if chunk and int(chunk) > 0 else 10000
-        cur = cx.cursor()
-        for i in range(0, len(records), CHUNK):
-            batch = records[i:i+CHUNK]
-            cur.executemany(sql, batch)
-            # Commit per chunk to avoid giant -wal/journal files that can trigger disk I/O errors
-            cx.commit()
-    finally:
-        cx.close()
-    return os.path.abspath(db_path)
 
 def build_arg_parser():
     ap = argparse.ArgumentParser(description="Load word index into a persistent store")
@@ -137,13 +74,21 @@ def main():
             path = save_words_to_file(records, out_file)
             print(f"Saved {len(records)} words to file: {path}")
         elif args.mode == "postgres":
+            from tools.storage.postgres import PostgresStorage
             dsn = args.pg_dsn or os.environ.get("POSTGRES_DSN", "")
-            save_words_to_postgres(records, dsn, copy_threshold=args.pg_copy_threshold)
+            storage = PostgresStorage(dsn, profile=args.profile)
+            CHUNK = max(1, int(args.db_chunk))
+            for i in range(0, len(records), CHUNK):
+                storage.ensure_words(records[i:i+CHUNK])
             print(f"Loaded {len(records)} words into Postgres")
         elif args.mode == "sqlite":
+            from tools.storage.sqlite import SqliteStorage
             db_path = args.db_path if args.db_path else os.path.join(os.path.dirname(prof.wordlist_path), "words.db")
-            path = save_words_to_sqlite(records, db_path, chunk=args.db_chunk, journal=args.db_journal)
-            print(f"Loaded {len(records)} words into SQLite db: {path}")
+            storage = SqliteStorage(db_path, profile=args.profile)
+            CHUNK = max(1, int(args.db_chunk))
+            for i in range(0, len(records), CHUNK):
+                storage.ensure_words(records[i:i+CHUNK])
+            print(f"Loaded {len(records)} words into SQLite db: {os.path.abspath(db_path)}")
     except Exception:
         logger.exception("load_words failed")
         raise SystemExit(1)

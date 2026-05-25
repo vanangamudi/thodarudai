@@ -194,7 +194,7 @@ class SqliteStorage(StorageBase):
 
     def ensure_words(self, records: Iterable[Tuple[str, int, int]]) -> None:
         recs = list(records or [])
-        logger.info("ensure_words: records=%d", len(recs))
+        logger.debug("ensure_words: records=%d", len(recs))
         if not recs:
             return
         with self._conn() as cx:
@@ -203,6 +203,7 @@ class SqliteStorage(StorageBase):
                 "INSERT INTO words(word,freq,glen) VALUES (?,?,?) ON CONFLICT(word) DO UPDATE SET freq=excluded.freq, glen=excluded.glen",
                 recs
             )
+
     def commit_segmentations(self, rows: Iterable[Tuple[str, str, str, int, str]], batch_name: str) -> int:
         """
         Commit multiple segmentation records atomically.

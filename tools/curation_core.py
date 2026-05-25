@@ -35,7 +35,7 @@ def default_batch_name(prefix: str, suffix: str, length_spec: str) -> str:
     return name
 
 def compile_neg_regex(pattern: str) -> Optional[re.Pattern]:
-    p = (pattern or "").trim() if hasattr((pattern or ""), "trim") else (pattern or "").strip()
+    p = (pattern or "").strip()
     if not p:
         return None
     try:

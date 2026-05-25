@@ -287,8 +287,6 @@ class PostgresStorage(StorageBase):
                 (word, self.profile, int(split_pos), left_text, right_text, notes)
             )
 
-<<<<<<< HEAD
-=======
     def commit_segmentations(self, rows: Iterable[Tuple[str, str, str, int, str]], batch_name: str) -> int:
         """
         Commit multiple segmentation records atomically.
@@ -305,7 +303,7 @@ class PostgresStorage(StorageBase):
             else:
                 cur.executemany("INSERT INTO segmentations(word,profile,split_pos,left_text,right_text,notes) VALUES(%s,%s,%s,%s,%s,%s)", seg_rows)
         return len(seg_rows)
->>>>>>> 5062a46 (frontend fixup; segmentations are properly commited to the database)
+
     def list_segmentations(self, word: str, scope: Optional[str] = None) -> List[Dict[str,Any]]:
         logger.info("list_segmentations: word=%s scope=%s", word, scope or "all")
         rows = []
