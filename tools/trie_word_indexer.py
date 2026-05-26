@@ -17,6 +17,7 @@ from tools.profile import Profile
 import argparse
 from typing import List, Tuple, Dict, Iterable
 
+from tools.common import sanitize_word, grapheme_length
 import arichuvadi as ari
 from chorkilai.trie import OnDiskTrie
 import logging
@@ -62,9 +63,11 @@ def _parse_word_index_rows(wordlist_path):
                 continue
             cols = ln.rstrip("\n").split("\t")
             try:
-                w = cols[idx["word"]]
+                w = sanitize_word(cols[idx["word"]])
+                if not w:
+                    continue
                 fr = int(cols[idx["freq"]])
-                gl = int(cols[idx["glen"]])
+                gl = grapheme_length(w)
                 yield (w, fr, gl)
             except Exception:
                 continue

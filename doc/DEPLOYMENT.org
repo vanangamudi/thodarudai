@@ -1,0 +1,104 @@
+* Running only Postgres with Podman (dev/test)
+  - Start DB:
+    - ~bash docker/postgres/pg-up.sh~
+  - Export DSN:
+    - ~export POSTGRES_DSN="postgresql://thodarudai:thodarudai@127.0.0.1:5432/thodarudai"~
+  - Seed:
+    - ~python tools/load_words.py postgres --files <path>/word-index.tsv --db-chunk 50000~
+  - Run backend on host:
+    - ~STORAGE_BACKEND=postgres POSTGRES_DSN="$POSTGRES_DSN" python webui1/app.py~
+  - Stop DB:
+    - ~bash docker/postgres/pg-down.sh~ (use PGCLEAN=1 to drop volume)
+
+  Remember to chmod the scripts:
+  - git add docker/postgres/pg-up.sh docker/postgres/pg-down.sh
+  - git update-index --chmod=+x docker/postgres/pg-up.sh docker/postgres/pg-down.sh
+
+* Production deployment (remote server)
+
+This section describes how to deploy the API on a remote Linux server, serving production traffic. We keep backend and frontend on the host OS (systemd + optional Nginx), and run only Postgres in a container using Podman (or Docker). Adjust paths/domains as needed.
+
+** Prerequisites
+- OS: Ubuntu 22.04+ (or similar)
+- Packages:
+  - Python 3.10+ and venv: ~sudo apt-get install -y python3-venv python3-pip~
+  - Podman (or Docker): ~sudo apt-get install -y podman podman-docker~ (or install Docker CE)
+  - Nginx (optional, recommended): ~sudo apt-get install -y nginx~
+- Clone repo to e.g. ~/apps/thodarudai and cd into it.
+
+** One-time Postgres setup (Podman)
+- Start Postgres (bind to localhost only, data persisted in a named volume):
+  - ~podman compose -f docker/postgres/docker-compose.yml up -d~
+- Create a DSN env var for backend:
+  - ~export POSTGRES_DSN="postgresql://thodarudai:thodarudai@127.0.0.1:5432/thodarudai"~
+- Seed words (first time only):
+  - ~python tools/load_words.py postgres --files <path>/word-index.tsv --db-chunk 50000~
+- Verify health:
+  - ~podman logs -f thodarudai-postgres~ (Ctrl-C to exit)
+  - connect: ~psql "$POSTGRES_DSN" -c "SELECT COUNT(*) FROM words;"~ (psql optional)
+
+** Backend (FastAPI) service via systemd
+- Create and activate a virtualenv:
+  - ~python3 -m venv .venv && . .venv/bin/activate~
+- Install minimal server deps:
+  - ~pip install fastapi uvicorn[standard] python-multipart psycopg2-binary~
+- Create an environment file (adjust BASE_DIR and domain):
+  - ~/etc/thodarudai.env~ (root-owned, 0600 recommended):
+    #+begin_src env
+    # Backend
+    STORAGE_BACKEND=postgres
+    POSTGRES_DSN=postgresql://thodarudai:thodarudai@127.0.0.1:5432/thodarudai
+    PROFILE=default
+    BASE_DIR=/var/lib/thodarudai/data
+    # Bind and CORS
+    CORS_ORIGINS=https://your.domain
+    # Keep API behind nginx; bind only localhost
+    APP_HOST=127.0.0.1
+    APP_PORT=8000
+    #+end_src
+- Create data dir and permissions:
+  - ~sudo mkdir -p /var/lib/thodarudai/data && sudo chown -R $USER:$USER /var/lib/thodarudai~
+- Install systemd service (template provided in repo under deploy/systemd):
+  - ~sudo cp deploy/systemd/thodarudai-web.service /etc/systemd/system/~
+  - Edit ExecStart/WorkingDirectory and EnvironmentFile if your paths differ.
+  - ~sudo systemctl daemon-reload && sudo systemctl enable --now thodarudai-web~
+- Check status/logs:
+  - ~systemctl status thodarudai-web~
+  - ~journalctl -u thodarudai-web -f~
+
+** Frontend (optional)
+- Serve a production build from any static host or nginx. If using React/Vite in this repo, build locally and deploy the dist/ folder behind nginx, setting VITE_API_BASE to your API URL.
+- Ensure CORS_ORIGINS in the backend includes your frontend origin.
+
+** Nginx reverse proxy (recommended)
+- Use the provided example under deploy/nginx. Basic reverse proxy (HTTP) steps:
+  - ~sudo cp deploy/nginx/thodarudai.conf /etc/nginx/sites-available/~
+  - ~sudo ln -s /etc/nginx/sites-available/thodarudai.conf /etc/nginx/sites-enabled/thodarudai.conf~
+  - ~sudo nginx -t && sudo systemctl reload nginx~
+- For TLS, wrap the server block with your certs or Let’s Encrypt via certbot.
+
+** Health checks and verification
+- API health:
+  - ~curl -s http://localhost:8000/api/health | jq~
+- Summary endpoint:
+  - ~curl -s http://localhost:8000/api/summary | jq~
+- Query test:
+  - ~curl -s -X POST -F prefix=அ -F length_spec=8- -F limit=10 http://localhost:8000/api/query | jq~
+
+** Upgrades and rollback
+- Pull latest code:
+  - ~git pull~
+- Reinstall deps if required:
+  - ~. .venv/bin/activate && pip install -U -r requirements-server.txt~ (if you maintain this file)
+- Restart service:
+  - ~sudo systemctl restart thodarudai-web~
+- Rollback: ~git checkout <tag-or-commit> && sudo systemctl restart thodarudai-web~
+
+** Troubleshooting
+- Postgres not reachable:
+  - Ensure service is up: ~podman ps~, and logs: ~podman logs thodarudai-postgres~
+  - DSN uses 127.0.0.1 (not localhost) to avoid socket vs TCP confusion.
+- CORS errors:
+  - Set ~CORS_ORIGINS~ to your frontend origin (comma-separated) and restart backend.
+- Words missing/zero:
+  - Re-run seed: ~python tools/load_words.py postgres --files <path>/word-index.tsv --db-chunk 50000~

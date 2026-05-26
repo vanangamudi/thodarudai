@@ -5,6 +5,7 @@ from collections import Counter
 import time
 import logging
 from typing import Tuple, Dict, Iterable
+import unicodedata as _ud
 logger = logging.getLogger("common")
 _GLEN_FALLBACK_WARNED = False
 
@@ -24,6 +25,23 @@ def grapheme_length(s):
             # Last resort: codepoint length
             logger.debug("grapheme_length: falling back to codepoint length for %r", s)
             return len(s)
+
+def sanitize_word(s: str) -> str:
+    if not s:
+        return ""
+    s = s.replace("\x00", "").replace("\r", "").replace("\n", "")
+    out = []
+    for ch in s:
+        cat = _ud.category(ch)
+        # Keep format chars (Cf: e.g. ZWJ/ZWNJ); drop other control/surrogate/private/unassigned
+        if cat.startswith("C") and cat != "Cf":
+            continue
+        if ch == "\u200B":  # zero width space: drop
+            continue
+        out.append(ch)
+    s = "".join(out)
+    s = s.replace("\u00A0", " ").strip()
+    return s
 
 
 def openfile(filepath, mode='rt', *args, **kwargs):
@@ -67,7 +85,15 @@ def iter_word_freq_glen_from_tsv(path: str):
             if not ln.strip():
                 continue
             c = ln.rstrip("\n").split("\t")
-            yield c[idx["word"]], int(c[idx["freq"]]), int(c[idx["glen"]])
+            w = sanitize_word(c[idx["word"]] if len(c) > idx["word"] else "")
+            if not w:
+                continue
+            try:
+                fr = int(c[idx["freq"]])
+            except Exception:
+                continue
+            gl = grapheme_length(w)
+            yield w, fr, gl
 
 def aggregate_precomputed(files: Iterable[str]):
     acc: Dict[str, Tuple[int, int]] = {}

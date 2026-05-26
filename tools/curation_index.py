@@ -50,8 +50,56 @@ class CuratedIndex:
         self.total_curation_entries = 0
         logger.info("CuratedIndex(fs): dir=%s err=%.3g", self.batches_dir, self.error_rate)
 
-
-
+    def reload(self):
+        """Full rescan of batches dir; rebuild curated sets and counts."""
+        try:
+            latest = 0.0
+            words = set()
+            counts = {}
+            if not os.path.isdir(self.batches_dir):
+                self.bloom = BloomFilter(1, error_rate=self.error_rate)
+                self.curated_words = set()
+                self.curation_counts = {}
+                self.curated_count = 0
+                self.total_curation_entries = 0
+                self._last_mtime = 0.0
+                return
+            for name in os.listdir(self.batches_dir):
+                if not name.lower().endswith(".tsv"):
+                    continue
+                p = os.path.join(self.batches_dir, name)
+                try:
+                    st = os.stat(p)
+                    latest = max(latest, st.st_mtime)
+                    with open(p, "r", encoding="utf-8") as f:
+                        header = f.readline().strip().split("\t")
+                        idx = {h: i for i, h in enumerate(header)}
+                        if not {"word", "splits"}.issubset(idx):
+                            continue
+                        for ln in f:
+                            if not ln.strip():
+                                continue
+                            cols = ln.rstrip("\n").split("\t")
+                            w = cols[idx["word"]]
+                            s = cols[idx["splits"]]
+                            if w and s:
+                                words.add(w)
+                                counts[w] = counts.get(w, 0) + 1
+                except (OSError, UnicodeDecodeError):
+                    continue
+            cap = max(1000, int(len(words) * 1.3) or 1)
+            self.bloom = BloomFilter(capacity=cap, error_rate=self.error_rate)
+            for w in words:
+                self.bloom.add(w)
+            self.curated_words = words
+            self.curation_counts = counts
+            self.curated_count = len(words)
+            self.total_curation_entries = sum(counts.values())
+            self._last_mtime = latest
+            logger.info("CuratedIndex.fs.reload: curated_distinct=%d total_entries=%d",
+                        self.curated_count, self.total_curation_entries)
+        except Exception as e:
+            logger.warning("CuratedIndex.fs.reload failed: %s", e)
 
     def maybe_reload_on_change(self):
         try:
@@ -106,11 +154,22 @@ class CuratedIndex:
         else:
             logger.info("CuratedIndex.fs: update_from_batch added=0 (no-op)")
 
+    def refresh(self):
+        """Lightweight refresh; reload only if the batches dir changed."""
+        self.maybe_reload_on_change()
+
+    def is_curated(self, word: str) -> bool:
+        return word in self.bloom
+
 class CuratedIndexDB(CuratedIndex):
     def __init__(self, storage, error_rate=0.01):
         super().__init__(batches_dir="", error_rate=error_rate)
         self.storage = storage
         logger.info("CuratedIndexDB: storage=%s err=%.3g", type(self.storage).__name__, self.error_rate)
+    
+    def refresh(self):
+        """Always reload from DB."""
+        self.reload()
 
     def reload(self):
         logger.info("CuratedIndexDB.reload: fetching curated sets")
@@ -137,14 +196,8 @@ class CuratedIndexDB(CuratedIndex):
             self.curation_counts = {}
             self.total_curation_entries = 0
 
-
-
-
-
-
     def is_curated(self, word):
         return word in self.bloom
-
 
     def update_from_batch(self, tsv_lines):
         # Fast-path update after commit without full reload

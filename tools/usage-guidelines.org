@@ -9,3 +9,10 @@
   - ~python -m tools.function_lengths . --min 50 --by-file~
 - JSON output for scripting:
   - ~python -m tools.function_lengths tools/gui_qt_app.py --json --min 30~
+
+<existing content unchanged>
+
+- Backend selection (mutually exclusive)
+  - STORAGE_BACKEND=auto (default) picks exactly one backend: postgres if POSTGRES_DSN is set; else sqlite if a DB file exists; else fs.
+  - Set DISABLE_FS_BACKEND=1 to prohibit falling back to the filesystem backend.
+  - FS mode now lazy-loads the large word index only on the first FS query; DB modes do not touch the FS index at startup.

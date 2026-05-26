@@ -11,6 +11,7 @@ from bisect import bisect_left, bisect_right
 import heapq
 import logging
 import time
+from tools.common import sanitize_word, grapheme_length
 logger = logging.getLogger("word_indexer")
 
 class WordIndex:
@@ -91,9 +92,11 @@ class WordIndex:
                     continue
                 cols = line.rstrip("\n").split("\t")
                 try:
-                    word = cols[idx["word"]]
+                    word = sanitize_word(cols[idx["word"]])
+                    if not word:
+                        continue
                     freq = int(cols[idx["freq"]])
-                    glen = int(cols[idx["glen"]])
+                    glen = grapheme_length(word)
                     words.append((word, freq, glen))
                 except Exception:
                     continue

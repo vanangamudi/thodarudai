@@ -43,9 +43,27 @@ WORDLIST_PATH = os.path.abspath(PROF.wordlist_path)
 BATCHES_DIR = os.path.abspath(PROF.batches_dir)
 LEDGER_PATH = os.path.abspath(PROF.ledger_path)
 REMINDERS_PATH = os.path.abspath(PROF.reminders_path)
-STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "fs")  # 'fs' or 'sqlite'
+RAW_STORAGE = os.environ.get("STORAGE_BACKEND", "auto")
 SQLITE_PATH = os.environ.get("SQLITE_PATH", os.path.abspath("data/curation.db"))
 POSTGRES_DSN = os.environ.get("POSTGRES_DSN", "")
+DISABLE_FS = os.environ.get("DISABLE_FS_BACKEND", "0") == "1"
+
+def _auto_backend():
+    if POSTGRES_DSN:
+        return "postgres"
+    if os.path.exists(SQLITE_PATH):
+        return "sqlite"
+    return "fs"
+
+STORAGE_BACKEND = (RAW_STORAGE.lower() if RAW_STORAGE else "auto")
+if STORAGE_BACKEND == "auto":
+    STORAGE_BACKEND = _auto_backend()
+# Enforce mutual exclusivity and prefer DB when DSN is provided
+if POSTGRES_DSN and STORAGE_BACKEND == "fs":
+    logger.info("POSTGRES_DSN provided; overriding FS with postgres backend")
+    STORAGE_BACKEND = "postgres"
+if DISABLE_FS and STORAGE_BACKEND == "fs":
+    raise RuntimeError("FS backend disabled (DISABLE_FS_BACKEND=1). Set STORAGE_BACKEND=postgres with POSTGRES_DSN or use sqlite.")
 APP_HOST = os.environ.get("APP_HOST", "127.0.0.1")
 APP_PORT = int(os.environ.get("APP_PORT", "8000"))
 APP_RELOAD = os.environ.get("APP_RELOAD", "0") == "1"
@@ -59,6 +77,13 @@ CURATED = None
 def _init_word_index(wordlist_path):
     from tools.word_indexer import WordIndex
     return WordIndex(wordlist_path)
+
+def _ensure_fs_index_loaded():
+    global WORD_INDEX
+    if WORD_INDEX is None:
+        logger.info("Loading FS WordIndex on demand…")
+        WORD_INDEX = _init_word_index(WORDLIST_PATH)
+    logging.info("Loaded FS WordIndex: %d words", len(WORD_INDEX.words))
 
 def _init_storage_and_curated():
     sb = STORAGE_BACKEND.lower()
@@ -99,7 +124,10 @@ def _seed_db_words_if_empty(storage, wordlist_path):
 def initialize_services():
     global WORD_INDEX, CURATED, STORAGE
     STORAGE, CURATED = _init_storage_and_curated()
-    CURATED.reload()
+    try:
+        CURATED.refresh()
+    except Exception:
+        pass
     if STORAGE_BACKEND.lower() in ("sqlite", "postgres"):
         WORD_INDEX = None
         _seed_db_words_if_empty(STORAGE, WORDLIST_PATH)
@@ -108,12 +136,9 @@ def initialize_services():
         except Exception:
             words_count = 0
     else:
-        WORD_INDEX = _init_word_index(WORDLIST_PATH)
-        words_count = len(WORD_INDEX.words)
-    logging.info(
-        "Initialized WORD_INDEX (%d), CURATED (%d), storage=%s",
-        words_count, CURATED.curated_count, STORAGE_BACKEND
-    )
+        WORD_INDEX = None  # lazy-load on first FS query
+        words_count = 0
+
 def _build_tsv_min(rows):
     return core_build_tsv_lines(rows)
 
@@ -143,6 +168,7 @@ def _db_do_query(fields, min_len, max_len):
     return rows, dur
 
 def _fs_do_query(fields, min_len, max_len):
+    _ensure_fs_index_loaded()
     t0 = time.perf_counter()
     probe = min(fields["limit"] * 5, max(fields["limit"] + 500, 5000))
     raw = WORD_INDEX.query_words(prefix=fields["prefix"], suffix=fields["suffix"],
@@ -190,8 +216,10 @@ def _commit_fs_rows(rows, batch_name, tsv_lines):
     return bp, lp
 
 def _update_curated_after_commit(tsv_lines):
-    if hasattr(CURATED, "update_from_batch"): CURATED.update_from_batch(tsv_lines)
-    else: CURATED.maybe_reload_on_change()
+    if hasattr(CURATED, "update_from_batch"):
+        CURATED.update_from_batch(tsv_lines)
+    else:
+        CURATED.refresh()
 
 app = FastAPI(title="Tamil Splits Web UI")
 from fastapi.middleware.cors import CORSMiddleware
@@ -394,7 +422,7 @@ def api_query(
         fields = normalize_query_fields(prefix, suffix, regex, prefix_not, suffix_not, regex_not, length_spec, limit, curated_ratio)
         logger.info("API /api/query fields=%s", json.dumps(fields, ensure_ascii=False))
         min_len, max_len = parse_length_spec(fields["length_spec"])
-        if STORAGE_BACKEND.lower() in ("sqlite", "postgres"):
+        if hasattr(STORAGE, "query_index"):
             rows, dur_ms = _db_do_query(fields, min_len, max_len)
             logger.info("API /api/query handled_by=db returned=%d dur_ms=%d", len(rows), dur_ms)
         else:

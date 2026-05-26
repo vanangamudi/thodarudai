@@ -38,17 +38,6 @@ def get_shared_curated_index(batches_dir):
     idx = CURATED_INDEX_CACHE.get(key)
     if idx is None:
         idx = CuratedIndex(batches_dir)
-        # Safely initialize; CuratedIndexDB has reload(), CuratedIndex does not.
-        if hasattr(idx, "reload"):
-            try:
-                idx.reload()
-            except Exception:
-                pass
-        elif hasattr(idx, "maybe_reload_on_change"):
-            try:
-                idx.maybe_reload_on_change()
-            except Exception:
-                pass
         CURATED_INDEX_CACHE[key] = idx
     else:
         logging.info("Reusing shared CuratedIndex: %s", key)
@@ -414,16 +403,10 @@ class MainWindow(QMainWindow):
                 pass
         # Warm load if supported
         if self.curated:
-            if hasattr(self.curated, "reload"):
-                try:
-                    self.curated.reload()
-                except Exception:
-                    pass
-            elif hasattr(self.curated, "maybe_reload_on_change"):
-                try:
-                    self.curated.maybe_reload_on_change()
-                except Exception:
-                    pass
+            try:
+                self.curated.refresh()
+            except Exception:
+                pass
 
     def __init__(self, ui_scale=1.5, font_size=None, storage=None, curated=None):
         super().__init__()
@@ -529,7 +512,7 @@ class MainWindow(QMainWindow):
         })
 
     def query_words(self):
-        self.curated.maybe_reload_on_change()
+        self.curated.refresh()
         q = self._read_query_fields()
         self._log_query_event(q)
         raw, elapsed_ms, db_mixed = self._probe_raw_results(q)
@@ -1682,16 +1665,6 @@ if __name__ == "__main__":
         from tools.storage.file import FileStorage
         storage = FileStorage(BATCHES_DIR, LEDGER_PATH, REMINDERS_PATH)
         curated = CuratedIndex(BATCHES_DIR)
-    if hasattr(curated, "reload"):
-        try:
-            curated.reload()
-        except Exception:
-            pass
-    elif hasattr(curated, "maybe_reload_on_change"):
-        try:
-            curated.maybe_reload_on_change()
-        except Exception:
-            pass
     # Indexer selection globals
     INDEXER_KIND = ("db" if args.storage in ("sqlite", "postgres") else args.indexer)
     if INDEXER_KIND == "trie":

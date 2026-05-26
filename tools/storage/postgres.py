@@ -2,6 +2,7 @@ from __future__ import annotations
 import time, logging
 from typing import List, Tuple, Dict, Iterable, Optional, Set, Any
 from . import StorageBase, Row, psycopg2, execute_batch
+from tools.common import sanitize_word
 
 logger = logging.getLogger("storage.postgres")
 
@@ -214,8 +215,13 @@ class PostgresStorage(StorageBase):
                 cur.execute("CREATE TEMP TABLE tmp_words(word TEXT, freq INTEGER, glen INTEGER) ON COMMIT DROP")
                 buf = io.StringIO()
                 w = csv.writer(buf)
+                skipped = 0
                 for (wrd, fr, gl) in recs:
-                    w.writerow([wrd, int(fr), int(gl)])
+                    sw = sanitize_word(wrd)
+                    if not sw:
+                        skipped += 1
+                        continue
+                    w.writerow([sw, int(fr), int(gl)])
                 buf.seek(0)
                 cur.copy_expert("COPY tmp_words(word,freq,glen) FROM STDIN WITH (FORMAT csv)", buf)
                 cur.execute("""
@@ -223,17 +229,26 @@ class PostgresStorage(StorageBase):
                     SELECT word, freq, glen FROM tmp_words
                     ON CONFLICT(word) DO UPDATE SET freq=EXCLUDED.freq, glen=EXCLUDED.glen
                 """)
-                logger.info("ensure_words: COPY+UPSERT upserted=%d", len(recs))
+                logger.info("ensure_words: COPY+UPSERT upserted=%d skipped=%d", len(recs) - skipped, skipped)
             else:
                 sql = (
                     "INSERT INTO words(word,freq,glen) VALUES (%s,%s,%s) "
                     "ON CONFLICT(word) DO UPDATE SET freq=EXCLUDED.freq, glen=EXCLUDED.glen"
                 )
-                if execute_batch:
-                    execute_batch(cur, sql, recs, page_size=10000)
-                else:
-                    cur.executemany(sql, recs)
-                logger.info("ensure_words: batch upserted=%d", len(recs))
+                data = []
+                skipped = 0
+                for (wrd, fr, gl) in recs:
+                    sw = sanitize_word(wrd)
+                    if not sw:
+                        skipped += 1
+                        continue
+                    data.append((sw, int(fr), int(gl)))
+                if data:
+                    if execute_batch:
+                        execute_batch(cur, sql, data, page_size=10000)
+                    else:
+                        cur.executemany(sql, data)
+                logger.info("ensure_words: batch upserted=%d skipped=%d", len(data), skipped)
 
     def query_index(self, prefix: str, suffix: str, regex: str,
                     prefix_not: str, suffix_not: str, regex_not: str,

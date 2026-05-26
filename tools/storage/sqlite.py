@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os, sqlite3, time, re
 import logging
+from tools.common import sanitize_word
 logger = logging.getLogger("storage.sqlite")
 from typing import List, Tuple, Dict, Iterable, Optional, Set, Any
 from . import StorageBase, Row
@@ -193,7 +194,8 @@ class SqliteStorage(StorageBase):
         return f"sqlite://{self.db_path}#{batch_name}"
 
     def ensure_words(self, records: Iterable[Tuple[str, int, int]]) -> None:
-        recs = list(records or [])
+        recs = [(sanitize_word(w), int(fr), int(gl)) for (w, fr, gl) in (records or [])]
+        recs = [t for t in recs if t[0]]  # drop records with empty word
         logger.debug("ensure_words: records=%d", len(recs))
         if not recs:
             return
