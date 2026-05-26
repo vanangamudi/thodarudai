@@ -1630,7 +1630,9 @@ if __name__ == "__main__":
     import argparse, os
     from tools.profile import default_profile, Profile
     parser = argparse.ArgumentParser(description="Tamil Splits GUI Client")
-    parser.add_argument("--storage", choices=["fs","sqlite","postgres"], default="fs", help="Storage backend for batches/ledger/reminders")
+    parser.add_argument("--storage", choices=["fs","sqlite","postgres","auto"],
+                        default=os.environ.get("STORAGE_BACKEND", "auto"),
+                        help="Storage backend (fs/sqlite/postgres) or 'auto' to prefer DB when available")
     parser.add_argument("--sqlite_path", default=None, help="Path to sqlite db (default: <profile-dir>/curation.db)")
     parser.add_argument("--profile", default="default", help="Profile name")
     parser.add_argument("--base_dir", default=None, help="Optional base directory")
@@ -1648,15 +1650,29 @@ if __name__ == "__main__":
     BATCHES_DIR = os.path.abspath(profile.batches_dir)
     UI_LOG_PATH = os.path.abspath(profile.ui_log_path)
     REMINDERS_PATH = os.path.abspath(profile.reminders_path)
-    # Unified storage abstraction: instantiate the storage backend based on the command-line argument.
-    if args.storage == "sqlite":
+    
+    # Resolve backend from CLI/env; prefer Postgres when DSN provided
+    storage_env = (os.environ.get("STORAGE_BACKEND", "") or "").lower()
+    dsn_env = os.environ.get("POSTGRES_DSN", "")
+    selected = (args.storage or "auto").lower()
+    if selected == "auto":
+        if storage_env in ("postgres", "sqlite", "fs"):
+            selected = storage_env
+        elif (args.pg_dsn or dsn_env):
+            selected = "postgres"
+        elif args.sqlite_path and os.path.exists(args.sqlite_path):
+            selected = "sqlite"
+        else:
+            selected = "fs"
+    logging.info("Qt storage selection: %s (env=%s, has_dsn=%s)", selected, (storage_env or "-"), bool(args.pg_dsn or dsn_env))
+    if selected == "sqlite":
         from tools.storage.sqlite import SqliteStorage
         SQLITE_PATH = args.sqlite_path or os.path.join(os.path.dirname(WORDLIST_PATH), "curation.db")
         storage = SqliteStorage(SQLITE_PATH, profile=profile.name)
         curated = CuratedIndexDB(storage)
-    elif args.storage == "postgres":
+    elif selected == "postgres":
         from tools.storage.postgres import PostgresStorage
-        dsn = args.pg_dsn or os.environ.get("POSTGRES_DSN", "")
+        dsn = args.pg_dsn or dsn_env
         if not dsn:
             raise SystemExit("Postgres storage selected but no DSN provided. Use --pg_dsn or set POSTGRES_DSN.")
         storage = PostgresStorage(dsn, profile=profile.name)
@@ -1666,7 +1682,7 @@ if __name__ == "__main__":
         storage = FileStorage(BATCHES_DIR, LEDGER_PATH, REMINDERS_PATH)
         curated = CuratedIndex(BATCHES_DIR)
     # Indexer selection globals
-    INDEXER_KIND = ("db" if args.storage in ("sqlite", "postgres") else args.indexer)
+    INDEXER_KIND = ("db" if selected in ("sqlite", "postgres") else args.indexer)
     if INDEXER_KIND == "trie":
         base_dir = os.path.dirname(WORDLIST_PATH)
         FWD_TRIE_PATH = args.fwd_trie or os.path.join(base_dir, "fwd.trie")
