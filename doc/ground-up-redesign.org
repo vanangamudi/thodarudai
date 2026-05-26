@@ -55,7 +55,7 @@ python -m tools.load_words sqlite --files ./data/word-index.tsv --db_path ./data
 #+begin_src sh
 python webui1/app.py
 # or
-uvicorn webui1.app:app --host 127.0.0.1 --port 8000 --reload
+uvicorn backend.api.app:app --host 127.0.0.1 --port 8000 --reload
 #+end_src
 
 - Start backend (SQLite mode)
@@ -331,7 +331,7 @@ Runbook (after migration)
   #+begin_example
   STORAGE_BACKEND=postgres POSTGRES_DSN=postgresql://user:pass@host:5432/db \
   SECRET_KEY=... USERS='{"alice":"$2b$...","bob":"$2b$..."}' \
-  uvicorn webui1.app:app --host 127.0.0.1 --port 8000
+  uvicorn backend.api.app:app --host 127.0.0.1 --port 8000
   #+end_example
 - Seed words into DB (one-time if empty):
   #+begin_example

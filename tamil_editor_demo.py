@@ -87,7 +87,7 @@ class PhoneticTextEdit(QTextEdit):
         """
         if self.composition:
             result = transliterate(self.composition)
-            from tools.tamil_phonetic import PHONETIC_VOWELS, PULLI
+            from backend.core.tamil_phonetic import PHONETIC_VOWELS, PULLI
             if not any(self.composition.lower().endswith(vt) for vt in PHONETIC_VOWELS.keys()):
                 if not result.endswith(PULLI):
                     result += PULLI
@@ -97,7 +97,7 @@ class PhoneticTextEdit(QTextEdit):
     def update_display(self):
         # Compute transliteration for current pending composition.
         current_disp = transliterate(self.composition)
-        from tools.tamil_phonetic import PHONETIC_VOWELS, PULLI
+        from backend.core.tamil_phonetic import PHONETIC_VOWELS, PULLI
         if self.composition and not any(self.composition.lower().endswith(vt) for vt in PHONETIC_VOWELS.keys()):
             if not current_disp.endswith(PULLI):
                 current_disp += PULLI
@@ -120,7 +120,7 @@ class PhoneticTextEdit(QTextEdit):
           - the vowel_prefix part is a prefix of some vowel token.
         """
         candidate = candidate.lower()
-        from tools.tamil_phonetic import PHONETIC_VOWELS, CONSONANTS
+        from backend.core.tamil_phonetic import PHONETIC_VOWELS, CONSONANTS
         tokens = list(PHONETIC_VOWELS.keys()) + list(CONSONANTS.keys())
         if any(token == candidate or token.startswith(candidate) for token in tokens):
             return True

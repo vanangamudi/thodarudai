@@ -2,7 +2,7 @@ from __future__ import annotations
 import time, logging
 from typing import List, Tuple, Dict, Iterable, Optional, Set, Any
 from . import StorageBase, Row, psycopg2, execute_batch
-from tools.common import sanitize_word
+from backend.core.common import sanitize_word
 
 logger = logging.getLogger("storage.postgres")
 

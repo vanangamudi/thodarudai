@@ -23,7 +23,7 @@ def parse_params(line):
             params[k] = percent_decode(v)
     return cmd, params
 
-from tools.word_indexer import WordIndex
+from backend.indexing.word_indexer import WordIndex
 
 class State:
     def __init__(self, wordlist_path, ledger_path):
@@ -284,7 +284,7 @@ def main():
     ap.add_argument("--profile", default="default", help="Profile name to choose different corpora")
     ap.add_argument("--base_dir", default=None, help="Optional base directory for the profile")
     args = ap.parse_args()
-    from tools.profile import Profile
+    from backend.core.profile import Profile
     profile = Profile(name=args.profile, base_dir=args.base_dir)
     wordlist_path = profile.wordlist_path
     ledger_path = profile.ledger_path

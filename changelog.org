@@ -52,7 +52,7 @@
     #+end_example
     or:
     #+begin_example
-    uvicorn webui1.app:app --host 127.0.0.1 --port 8000 --reload
+    uvicorn backend.api.app:app --host 127.0.0.1 --port 8000 --reload
     #+end_example
   - Frontend:
     #+begin_example
@@ -131,7 +131,7 @@
 - How to run
   - Backend:
     - python webui1/app.py
-    - or: uvicorn webui1.app:app --host 127.0.0.1 --port 8000 --reload
+    - or: uvicorn backend.api.app:app --host 127.0.0.1 --port 8000 --reload
   - Frontend:
     - cd webui1/frontend
     - npm install

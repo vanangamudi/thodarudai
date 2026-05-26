@@ -13,11 +13,11 @@ It can either build tries (forward and reverse) from a word-index TSV file or qu
 
 import os
 import re
-from tools.profile import Profile
+from backend.core.profile import Profile
 import argparse
 from typing import List, Tuple, Dict, Iterable
 
-from tools.common import sanitize_word, grapheme_length
+from backend.core.common import sanitize_word, grapheme_length
 import arichuvadi as ari
 from chorkilai.trie import OnDiskTrie
 import logging
@@ -392,7 +392,7 @@ def main():
     ap = build_arg_parser()
     args = ap.parse_args()
 
-    from tools.profile import Profile
+    from backend.core.profile import Profile
     prof = Profile(name=args.profile, base_dir=args.base_dir)
     wl = args.wordlist or prof.wordlist_path
     base_dir = os.path.dirname(wl)

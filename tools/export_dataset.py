@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 import os, time
-from tools.profile import Profile
-from tools.storage import FileStorage, SqliteStorage, PostgresStorage
+from backend.core.profile import Profile
+from backend.storage import FileStorage, SqliteStorage, PostgresStorage
 
 def main():
     ap = argparse.ArgumentParser()

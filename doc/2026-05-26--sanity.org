@@ -1,0 +1,48 @@
+Run these commands from the repo root to checkpoint your workspace, prep the environment, and verify services before editing.
+
+- Safety checkpoint and feature branch
+  git status
+  git stash push -u -m "pre-change stash $(date -Iseconds)" || true
+  git fetch --all --tags
+  git checkout -b chore/prep-$(date +%Y%m%dT%H%M%S)
+  git ls-files -z | xargs -0 tar -czf /tmp/thodarudai-prechange-$(date +%s).tar.gz
+
+- Python env and deps
+  python3 -m venv .venv
+  . .venv/bin/activate
+  python -V
+  pip install -U pip
+  pip install fastapi uvicorn[standard] python-multipart psycopg2-binary PyQt5 tqdm
+
+- Start Postgres (Podman) and wait readiness
+  bash docker/postgres/pg-up.sh
+  podman exec thodarudai-postgres pg_isready -U thodarudai -d thodarudai -h 127.0.0.1 -p 5432
+
+- Export runtime env (DB-first, mutually exclusive backends)
+  export STORAGE_BACKEND=postgres
+  export POSTGRES_DSN="postgresql://thodarudai:thodarudai@127.0.0.1:5432/thodarudai"
+  export PROFILE=default
+  export BASE_DIR="$PWD"
+
+- Seed DB words if empty (adjust path if needed)
+  python tools/load_words.py postgres --files "$BASE_DIR/default/word-index.tsv" --db-chunk 50000 || true
+
+- Quick backend smoke (start/health/stop)
+  uvicorn backend.api.app:app --host 127.0.0.1 --port 8000 &
+  UV_PID=$!
+  sleep 2
+  curl -fsS http://127.0.0.1:8000/api/health || true
+  kill $UV_PID || true
+
+- Frontend deps (optional now, ensures build works)
+  cd webui1/frontend
+  npm ci
+  VITE_API_BASE=http://127.0.0.1:8000 npm run build
+  cd -
+
+- Fast static check
+  python -m compileall -q tools webui1 || true
+
+- Sanity greps (merge markers, tabs in py, etc.)
+  git grep -nE '<<<<<<<|>>>>>>>' || true
+  git grep -nP '\t' -- '*.py' || true

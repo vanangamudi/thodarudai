@@ -1,0 +1,99 @@
+#+title: Backlog — pre-public rollout
+#+language: en
+
+* Immediate fixes (defects) [#A]
+- [x] tools/curation_core.py: fix =compile_neg_regex= to use =strip()= (replace accidental =trim()= call)
+- [ ] tools/curation_core.py: remove stray global defs =add_segmentation(...)= and =list_segmentations(...)=
+- [x] tools/gui_qt_app.py: resolve merge markers
+  - [x] _parse_split_for_commit(): keep =if "-" not in (splits or ""):= and delete conflict markers
+  - [x] commit_edits(): keep “FS mode: write batch TSV + append file ledger” comment, remove conflict markers
+  - [x] tools/curation_index.py (fs): implement =reload()= and =is_curated()=; add unified =refresh()= on FS/DB
+  - [x] webui1/app.py, tools/gui_qt_app.py: use =curated.refresh()= at call sites; remove duplicate reload calls
+- [ ] tools/curation_core.py: set =logger = logging.getLogger("curation_core")=
+
+* Security and authentication [#A]
+- [ ] Backend: add session middleware with =SECRET_KEY=; read =GOOGLE_CLIENT_ID= from env
+- [ ] Backend: implement =POST /api/login/google= verifying Google ID token; set =request.session["actor_id"]=
+- [ ] Backend: implement =POST /api/logout= and =GET /api/me=
+- [ ] Backend: per-request storage binding
+  - [ ] helper =storage_for_request(request)= returning backend storage with =profile= set to actor_id
+  - [ ] update =/api/commit=, reminders (GET/POST), and reminders/results to use per-request storage
+- [ ] Tighten CORS: read allowed origin from env; set secure cookies in production (same_site=lax, secure=true)
+- [ ] CSRF token for state-changing endpoints (commit, reminders) when using session cookies (optional for initial)
+
+* Data validation and integrity [#A]
+- [ ] Validate splits on server
+  - [ ] Ensure grapheme boundary via =ari.get_letters_coding= and that =left+right= reconstructs =word=
+- [ ] Return 400 when no valid splits were saved in /api/commit (currently returns ok with 0 saved)
+
+* Database readiness and migrations [#A]
+- [ ] Add SQL bootstrap files
+  - [x] docker/postgres/initdb/01-extensions.sql (pg_trgm)
+  - [ ] docker/postgres/initdb/02-schema.sql: words, segmentations, ledger, reminders (optional first-init determinism)
+- [ ] Optional migration helper =tools/db_migrate.py= to apply schema and indexes
+
+* Postgres performance [#B]
+- [x] Runtime: enable pg_trgm and create indexes in storage initializer
+  - [x] =pg_trgm= extension (best-effort)
+  - [x] GIN trigram index on words; text_pattern_ops prefix index; ranking index
+- [ ] Docs: Postgres COPY/encoding notes and stricter TEXT (no NUL) behavior
+- [ ] Docs: note index/extension requirements and effects
+
+* API completeness for Web UI [#A]
+- [ ] Add =GET /api/segmentations?word=... [&scope=all|me|actor:NAME]= using =storage.list_segmentations=
+- [ ] Extend =/api/query= with optional =curated_scope=; pass to DB storage and Python mixer
+
+* Frontend authentication and scope [#A]
+- [ ] Add Google Sign-In UI (Google Identity Services button); POST credential to =/api/login/google=
+- [ ] Fetch and display =/api/me= in footer; show actor_id when logged in
+- [ ] Add “Scope” control (All, Mine) and pass =curated_scope= to queries once backend supports it
+
+* Rate limiting and abuse protection [#B]
+- [ ] Add slowapi (per IP/session) on =/api/query= and =/api/commit= (for example 30/min)
+
+* Observability and ops [#B]
+- [ ] /api/health: add DB ping in DB modes; include storage backend summary in response
+- [ ] Optional error tracking (Sentry) for backend and frontend
+- [ ] Optional Prometheus metrics via prometheus-fastapi-instrumentator
+- [x] Podman Postgres scripts: readiness wait, SELinux :Z relabel on bind mount, psql helper without local client
+
+* Performance polish [#C]
+- [ ] Pagination in =/api/query= (accept =offset=; frontend lazy loading)
+- [ ] Query timeouts: confirm SQLite busy_timeout; set Postgres =statement_timeout= per session if needed
+- [x] Fast startup: STORAGE_BACKEND=auto (prefer Postgres if POSTGRES_DSN set; else SQLite if DB exists; else FS)
+- [x] Enforce mutually exclusive backend; prefer DB automatically when available
+- [x] FS mode: lazy-load WordIndex on first query (no 12M-word preload at startup)
+- [x] Qt client: support STORAGE_BACKEND=auto and prefer DB; avoid FS index preload in DB mode
+- [x] Chunked DB seeding via storage.ensure_words (both SQLite and Postgres)
+
+* Testing [#A]
+- [ ] Unit
+  - [ ] tools/curation_core: =parse_length_spec=, =compile_neg_regex=
+  - [ ] webui1/app.py: _parse_split_for_commit, DB summary helper
+- [ ] Integration
+  - [ ] FastAPI TestClient with SQLite temp DB: test /api/query, /api/commit, /api/summary, reminders
+  - [ ] Verify rows inserted into =segmentations= and ledger appended in DB mode
+- [ ] E2E (smoke)
+  - [ ] Frontend: login, run query, edit 1 row, commit, see summary update
+
+* Deployment [#A]
+- [ ] Dockerfile for backend; Vite build for frontend
+- [ ] docker-compose.yml with reverse proxy (nginx or Caddy)
+- [ ] .env.example: =SECRET_KEY=, =GOOGLE_CLIENT_ID=, =STORAGE_BACKEND=, =SQLITE_PATH=, =POSTGRES_DSN=, =FRONTEND_ORIGIN=
+- [ ] HTTPS termination at proxy; set secure cookies; restrict CORS to production origin
+
+* Documentation [#A]
+- [ ] Update =doc/ground-up-redesign.org= with auth flow, required env vars, DB bootstrap steps, and admin runbook
+- [ ] Update =doc/20260523T1229--project-bootstrapping-and-usage-guide.org= with DB schema bootstrap and login steps
+- [ ] Document “Data sanitization and Postgres character limits”
+  - Explain removal of NUL (0x00), CR/LF, and Unicode C* categories except Cf (keeps ZWJ/ZWNJ); explicit U+200B removal; NBSP normalization; glen recomputation
+  - Note: SQLite accepts such bytes; Postgres rejects them; loader sanitizes for parity
+
+* Cleanups [#B]
+- [ ] Deprecate or rename top-level =tools/storage.py= module to avoid confusion with package =tools/storage/=
+- [ ] Ensure logger names are consistent across modules
+- [ ] Make arichuvadi import optional in tools/common.py and webui1/app.py (try/except with stub fallback)
+
+Notes
+- Current status: DB queries/commits wired; Qt and Web UI both write to segmentations in DB mode and append a ledger entry. Words ingestion sanitizes inputs (tools.common.sanitize_word) and recomputes glen; Postgres COPY path enabled; FS backend is lazy and mutually exclusive with DB. Extensive logging enabled across storage, backend, and tools.
+- Rollout gating items: auth + per-request scoping, server-side split validation, DB schema bootstrap, and API completeness for history.

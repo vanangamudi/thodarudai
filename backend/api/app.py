@@ -4,9 +4,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import os, time, logging, math, random, json
 import arichuvadi as ari
-from tools.profile import Profile
-from tools.storage.file import FileStorage
-from tools.curation_index import CuratedIndexDB
+from backend.core.profile import Profile
+from backend.storage.file import FileStorage
+from backend.core.curation_index import CuratedIndexDB
 import re
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("webui")
@@ -22,9 +22,9 @@ def render_results_html(results):
 STARTUP_TS = int(time.time())
 BUILD_TAG = time.strftime("%Y%m%dT%H%M%S", time.localtime(STARTUP_TS))
 from fastapi.concurrency import run_in_threadpool
-from tools.word_indexer import WordIndex
-from tools.curation_index import CuratedIndex
-from tools.curation_core import (
+from backend.indexing.word_indexer import WordIndex
+from backend.core.curation_index import CuratedIndex
+from backend.core.curation_core import (
     normalize_query_fields, run_query,
     parse_length_spec, compile_neg_regex,
     filter_eligible as core_filter_eligible,
@@ -75,7 +75,7 @@ WORD_INDEX = None
 CURATED = None
 
 def _init_word_index(wordlist_path):
-    from tools.word_indexer import WordIndex
+    from backend.indexing.word_indexer import WordIndex
     return WordIndex(wordlist_path)
 
 def _ensure_fs_index_loaded():
@@ -88,13 +88,13 @@ def _ensure_fs_index_loaded():
 def _init_storage_and_curated():
     sb = STORAGE_BACKEND.lower()
     if sb == "sqlite":
-        from tools.storage.sqlite import SqliteStorage
+        from backend.storage.sqlite import SqliteStorage
         storage = SqliteStorage(SQLITE_PATH, profile=PROFILE_NAME)
         curated = CuratedIndexDB(storage)
     elif sb == "postgres":
         if not POSTGRES_DSN:
             raise RuntimeError("POSTGRES_DSN is required when STORAGE_BACKEND=postgres")
-        from tools.storage.postgres import PostgresStorage
+        from backend.storage.postgres import PostgresStorage
         storage = PostgresStorage(POSTGRES_DSN, profile=PROFILE_NAME)
         curated = CuratedIndexDB(storage)
     else:
@@ -110,7 +110,7 @@ def _seed_db_words_if_empty(storage, wordlist_path):
         if not storage.has_words() and os.path.exists(wordlist_path):
             CHUNK = 200000
             buf = []
-            from tools.common import iter_word_freq_glen_from_tsv
+            from backend.core.common import iter_word_freq_glen_from_tsv
             for w, fr, gl in iter_word_freq_glen_from_tsv(wordlist_path):
                 buf.append((w, fr, gl))
                 if len(buf) >= CHUNK:

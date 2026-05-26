@@ -5,7 +5,7 @@ logger = logging.getLogger("train_tokenizer")
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from tools.profile import Profile
+from backend.core.profile import Profile
 
 PAD = "<pad>"; BOS = "<bos>"; EOS = "<eos>"
 

@@ -16,8 +16,8 @@ Usage examples:
 
 import sys, os, sqlite3, time
 import argparse
-from tools.profile import Profile
-from tools.common import aggregate_precomputed
+from backend.core.profile import Profile
+from backend.core.common import aggregate_precomputed
 import logging
 logger = logging.getLogger("load_words")
 
@@ -74,7 +74,7 @@ def main():
             path = save_words_to_file(records, out_file)
             print(f"Saved {len(records)} words to file: {path}")
         elif args.mode == "postgres":
-            from tools.storage.postgres import PostgresStorage
+            from backend.storage.postgres import PostgresStorage
             dsn = args.pg_dsn or os.environ.get("POSTGRES_DSN", "")
             storage = PostgresStorage(dsn, profile=args.profile)
             CHUNK = max(1, int(args.db_chunk))
@@ -82,7 +82,7 @@ def main():
                 storage.ensure_words(records[i:i+CHUNK])
             print(f"Loaded {len(records)} words into Postgres")
         elif args.mode == "sqlite":
-            from tools.storage.sqlite import SqliteStorage
+            from backend.storage.sqlite import SqliteStorage
             db_path = args.db_path if args.db_path else os.path.join(os.path.dirname(prof.wordlist_path), "words.db")
             storage = SqliteStorage(db_path, profile=args.profile)
             CHUNK = max(1, int(args.db_chunk))

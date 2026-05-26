@@ -10,8 +10,8 @@ import logging
 import time
 logger = logging.getLogger("build_word_index")
 
-from tools.profile import Profile
-from tools.common import aggregate_precomputed
+from backend.core.profile import Profile
+from backend.core.common import aggregate_precomputed
 
 def build_arg_parser():
     import argparse

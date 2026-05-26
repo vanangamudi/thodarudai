@@ -11,7 +11,7 @@ from bisect import bisect_left, bisect_right
 import heapq
 import logging
 import time
-from tools.common import sanitize_word, grapheme_length
+from backend.core.common import sanitize_word, grapheme_length
 logger = logging.getLogger("word_indexer")
 
 class WordIndex:

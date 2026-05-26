@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import argparse, os, time, sys
-from tools.profile import Profile
+from backend.core.profile import Profile
 
 REQ_COLS = {"word","splits"}
 

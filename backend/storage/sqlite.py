@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os, sqlite3, time, re
 import logging
-from tools.common import sanitize_word
+from backend.core.common import sanitize_word
 logger = logging.getLogger("storage.sqlite")
 from typing import List, Tuple, Dict, Iterable, Optional, Set, Any
 from . import StorageBase, Row

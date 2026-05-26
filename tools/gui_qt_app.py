@@ -18,11 +18,11 @@ from PyQt5.QtWidgets import (
 )
 
 
-from tools.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
-from tools.trie_word_indexer import TrieWordIndex
-from tools.curation_index import CuratedIndex
-from tools.word_indexer import WordIndex
-from tools.curation_core import (
+from backend.core.tamil_phonetic import transliterate, PHONETIC_VOWELS, CONSONANTS
+from backend.indexing.trie_word_indexer import TrieWordIndex
+from backend.core.curation_index import CuratedIndex
+from backend.indexing.word_indexer import WordIndex
+from backend.core.curation_core import (
     parse_length_spec as cc_parse_length_spec,
     filter_eligible as cc_filter_eligible,
     partition_new_old as cc_partition_new_old,
@@ -30,7 +30,7 @@ from tools.curation_core import (
     default_batch_name as cc_default_batch_name,
     build_tsv_lines as cc_build_tsv_lines,
 )
-from tools.curation_index import CuratedIndexDB
+from backend.core.curation_index import CuratedIndexDB
 
 CURATED_INDEX_CACHE = {}
 def get_shared_curated_index(batches_dir):
@@ -1628,7 +1628,7 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     import argparse, os
-    from tools.profile import default_profile, Profile
+    from backend.core.profile import default_profile, Profile
     parser = argparse.ArgumentParser(description="Tamil Splits GUI Client")
     parser.add_argument("--storage", choices=["fs","sqlite","postgres","auto"],
                         default=os.environ.get("STORAGE_BACKEND", "auto"),
@@ -1666,19 +1666,19 @@ if __name__ == "__main__":
             selected = "fs"
     logging.info("Qt storage selection: %s (env=%s, has_dsn=%s)", selected, (storage_env or "-"), bool(args.pg_dsn or dsn_env))
     if selected == "sqlite":
-        from tools.storage.sqlite import SqliteStorage
+        from backend.storage.sqlite import SqliteStorage
         SQLITE_PATH = args.sqlite_path or os.path.join(os.path.dirname(WORDLIST_PATH), "curation.db")
         storage = SqliteStorage(SQLITE_PATH, profile=profile.name)
         curated = CuratedIndexDB(storage)
     elif selected == "postgres":
-        from tools.storage.postgres import PostgresStorage
+        from backend.storage.postgres import PostgresStorage
         dsn = args.pg_dsn or dsn_env
         if not dsn:
             raise SystemExit("Postgres storage selected but no DSN provided. Use --pg_dsn or set POSTGRES_DSN.")
         storage = PostgresStorage(dsn, profile=profile.name)
         curated = CuratedIndexDB(storage)
     else:
-        from tools.storage.file import FileStorage
+        from backend.storage.file import FileStorage
         storage = FileStorage(BATCHES_DIR, LEDGER_PATH, REMINDERS_PATH)
         curated = CuratedIndex(BATCHES_DIR)
     # Indexer selection globals
