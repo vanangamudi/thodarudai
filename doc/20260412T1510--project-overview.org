@@ -365,7 +365,7 @@ Purpose: build a frequency-aggregated =word-index.tsv= (word, freq, glen) from o
     - Aggregates counts across given file paths (or =default_profile.wordlist_path=).
     - Prints to stdout a header "word<TAB>freq<TAB>glen" and rows with ~ari.length(word)~.
 
-- CLI: ~python -m tools.build_word_index input1.tsv [input2.tsv ...]~
+- CLI: ~python -m cli.build_word_index input1.tsv [input2.tsv ...]~
 
 
 * Module: =tools/function_lengths.py=
@@ -752,11 +752,11 @@ Purpose: simple gz-aware file open and dict comparison helper.
 
 Examples:
 - Build word index:
-  - ~python -m tools.build_word_index input1.tsv input2.tsv > data/word-index.tsv~
+  - ~python -m cli.build_word_index input1.tsv input2.tsv > data/word-index.tsv~
 - Build trie-backed indexes:
-  - ~python -m tools.trie_word_indexer --build --wordlist data/word-index.tsv --fwd data/fwd.trie --rev data/rev.trie --parallel~
+  - ~python -m backend.indexing.trie_word_indexer --build --wordlist data/word-index.tsv --fwd data/fwd.trie --rev data/rev.trie --parallel~
 - Query trie index:
-  - ~python -m tools.trie_word_indexer --query_prefix க --limit 20~
+  - ~python -m backend.indexing.trie_word_indexer --query_prefix க --limit 20~
 - Export curated dataset:
   - ~python -m tools.export_batches_dataset --profile default --base_dir /abs/path~
 - Train tokenizer:

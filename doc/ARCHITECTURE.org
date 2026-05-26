@@ -252,17 +252,17 @@ ORDER BY profile, word, created_at DESC, id DESC;
 * Runbook (quick start)
 - Build TSV
 #+begin_src sh
-python -m tools.build_word_index --profile default --base_dir data --out data/word-index.tsv
+python -m cli.build_word_index --profile default --base_dir data --out data/word-index.tsv
 #+end_src
 
 - Load to SQLite
 #+begin_src sh
-python -m tools.load_words sqlite --files data/word-index.tsv --db_path data/curation.db
+python -m cli.load_words sqlite --files data/word-index.tsv --db_path data/curation.db
 #+end_src
 
 - Start backend (SQLite example)
 #+begin_src sh
-STORAGE_BACKEND=sqlite SQLITE_PATH=data/curation.db python webui1/app.py
+STORAGE_BACKEND=sqlite SQLITE_PATH=data/curation.db uvicorn backend.api.app:app --host 127.0.0.1 --port 8000
 #+end_src
 
 - Start frontend

@@ -98,11 +98,11 @@ The GUI focuses on fast search (by prefix/suffix/regex), bulk-editing, and workf
    This tool now supports robust argument parsing with options for output file, profile, and base_dir.
    For example, to combine two input TSV files and write the output to the default profile word-index:
 
-   - ~python -m tools.build_word_index input1.tsv input2.tsv --profile default --base_dir <dir>~
+   - ~python -m cli.build_word_index input1.tsv input2.tsv --profile default --base_dir <dir>~
 
    Or to direct the output to a file:
 
-   - ~python -m tools.build_word_index input1.tsv input2.tsv --out my_index.tsv --profile myProfile --base_dir <dir>~
+   - ~python -m cli.build_word_index input1.tsv input2.tsv --out my_index.tsv --profile myProfile --base_dir <dir>~
 
 3) (Optional) Build mmap-backed tries for fast prefix/suffix search.
    The trie indexer now uses a dedicated argument parser. In addition to the profile and base_dir options,
@@ -110,11 +110,11 @@ The GUI focuses on fast search (by prefix/suffix/regex), bulk-editing, and workf
 
    For example, to build tries with progress bars and overwrite any existing trie files:
 
-   - ~python -m tools.trie_word_indexer --profile default --base_dir <dir> --build --overwrite --pbar~
+   - ~python -m backend.indexing.trie_word_indexer --profile default --base_dir <dir> --build --overwrite --pbar~
 
    If you need to override the default paths, you can specify:
 
-   - ~python -m tools.trie_word_indexer --profile default --base_dir <dir> --build --fwd myFwd.trie --rev myRev.trie --overwrite --pbar~
+   - ~python -m backend.indexing.trie_word_indexer --profile default --base_dir <dir> --build --fwd myFwd.trie --rev myRev.trie --overwrite --pbar~
 
 ** Launch the GUI
 

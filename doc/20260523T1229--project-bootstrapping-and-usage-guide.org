@@ -86,7 +86,7 @@ This ensures that multiple processes (or user interfaces) can read from the data
 For a complete workflow, the following files are also relevant:
 - =tools/profile.py= defines the default profile and file paths used by the script.
 - =tools/build_word_index.py= shows similar functionality for building a word index TSV file.
-- =tools/storage.py= contains the storage abstraction used elsewhere in the project.
+- =backend/storage/= contains the storage abstraction used elsewhere in the project.
 
 * Running the Tools
 
@@ -100,9 +100,9 @@ The Web UI is composed of a backend API (built with FastAPI) and a front-end app
 
 To run the backend, execute:
 
-   =python webui1/app.py=
+   =uvicorn backend.api.app:app --host 127.0.0.1 --port 8000=
 For SQLite mode (uses the same API/endpoints):
-=STORAGE_BACKEND=sqlite SQLITE_PATH=./data/curation.db python webui1/app.py=
+=STORAGE_BACKEND=sqlite SQLITE_PATH=./data/curation.db uvicorn backend.api.app:app --host 127.0.0.1 --port 8000=
 
 This will start a FastAPI server on port 8000. The backend reads the word-index and ledger files (or a SQLite database if configured) and exposes endpoints for word query, commit, summary, and reminders.
 
@@ -145,7 +145,7 @@ The GUI supports launching new windows with cloned query parameters, modifying s
 
 * Environment Configuration
 
-The tools use a unified storage abstraction defined in =tools/storage.py=.
+The tools use a unified storage abstraction defined in =backend/storage/=.
 The storage backend is chosen based on the environment variable =STORAGE_BACKEND=. Its value can be:
    - =fs= for file-based storage.
    - =sqlite= for using a SQLite database.
@@ -159,6 +159,6 @@ Profiles (see =tools/profile.py=) control where files are located, so beginners 
 - Next, choose your indexing method:
   - For faster prefix/suffix search performance, build trie indexes using =tools/trie_word_indexer.py--build=.
   - Otherwise, the list-based index is loaded automatically.
-- Run the backend with =python webui1/app.py= and the front-end with npm commands from =webui1/frontend=.
+- Run the backend with =uvicorn backend.api.app:app --host 127.0.0.1 --port 8000= and the front-end with npm commands from =webui1/frontend=.
 - Alternatively, run =python tools/gui_qt_app.py= for a Qt-based desktop experience.
 - Both interfaces share the same underlying storage and indexes and can work concurrently provided storage is configured correctly.

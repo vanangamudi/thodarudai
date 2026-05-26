@@ -1,46 +1,59 @@
 Run these commands from the repo root to create the new package layout, move files with history, and rewrite imports/references in-place.
-
-1) Safety and branch
+* Safety and branch
 - Create a work branch and snapshot current tree:
+  #+begin_src shell
   git status
   git checkout -b refactor/pkg-layout-$(date +%Y%m%dT%H%M%S)
   git ls-files -z | xargs -0 tar -czf /tmp/thodarudai-pre-refactor-$(date +%s).tar.gz
-
-2) Create target package dirs
+  #+end_src
+* Create target package dirs
 - Create new package directories (with package markers):
+  #+begin_src shell
   mkdir -p backend/{api,core,indexing,storage} cli
   : > backend/__init__.py
   : > backend/api/__init__.py
   : > backend/core/__init__.py
   : > backend/indexing/__init__.py
   # backend/storage/__init__.py will be moved from tools/storage/__init__.py
+  #+end_src
 
-3) Move files (preserve history with git mv)
+* Move files (preserve history with git mv)
 - Backend API and cores:
-  git mv webui1/app.py                         backend/api/app.py
+  #+begin_src shell
+  git mv backend/api/app.py                         backend/api/app.py
   git mv tools/common.py                       backend/core/common.py
   git mv tools/profile.py                      backend/core/profile.py
   git mv tools/curation_index.py               backend/core/curation_index.py
   git mv tools/curation_core.py                backend/core/curation_core.py
   git mv tools/tamil_phonetic.py               backend/core/tamil_phonetic.py
+  #+end_src
 - Indexers:
+  #+begin_src shell
   git mv tools/word_indexer.py                 backend/indexing/word_indexer.py
   git mv tools/trie_word_indexer.py            backend/indexing/trie_word_indexer.py
+  #+end_src
 - Storage backends:
+  #+begin_src shell
   git mv tools/storage/sqlite.py               backend/storage/sqlite.py
   git mv tools/storage/postgres.py             backend/storage/postgres.py
   git mv tools/storage/file.py                 backend/storage/file.py
   git mv tools/storage/__init__.py             backend/storage/__init__.py
+  #+end_src
 - CLI tools:
+  #+begin_src shell
   mkdir -p cli
   git mv tools/load_words.py                   cli/load_words.py
   git mv tools/build_word_index.py             cli/build_word_index.py
   git mv tools/train_tokenizer.py              cli/train_tokenizer.py
+  #+end_src
 - Remove legacy module that conflicts with package path:
-  git rm tools/storage.py || true
+  #+begin_src shell
+  git rm backend/storage/ || true
+  #+end_src
 
 4) Rewrite imports to new package paths
 - Collect Python files and apply targeted replacements:
+  #+begin_src shell
   PYFILES="$(git ls-files '*.py')"
   # tools -> backend.core
   sed -i -E 's/\bfrom tools\.profile\b/from backend.core.profile/g'             $PYFILES
@@ -64,26 +77,48 @@ Run these commands from the repo root to create the new package layout, move fil
   sed -i -E 's/\bimport tools\.storage\.sqlite\b/import backend.storage.sqlite/g' $PYFILES
   sed -i -E 's/\bimport tools\.storage\.postgres\b/import backend.storage.postgres/g' $PYFILES
   sed -i -E 's/\bimport tools\.storage\.file\b/import backend.storage.file/g'     $PYFILES
+  #+end_src
 
 5) Update run targets and references to the API module
-- Replace any remaining references to webui1.app:app:
+- Replace any remaining references to =webui1.app:app=:
+  #+begin_src shell
   grep -RIl --exclude-dir=.git 'webui1\.app:app' . | xargs -r sed -i -E 's/webui1\.app:app/backend.api.app:app/g'
+  #+end_src
 - Optional: update scripts/docs that invoke moved CLIs:
+  #+begin_src shell
   grep -RIl --exclude-dir=.git 'tools/(load_words|build_word_index|train_tokenizer)\.py' . | xargs -r sed -i -E 's#tools/(load_words|build_word_index|train_tokenizer)\.py#-m cli.\1#g'
+  #+end_src
 
 6) Sanity check and commit
 - Quick import/compile pass:
-  python -m compileall -q backend cli tools || true
+  ~python -m compileall -q backend cli tools || true~
 - Run basic smoke (adjust DSN/env as needed):
+  #+begin_src shell
   STORAGE_BACKEND=postgres POSTGRES_DSN="$POSTGRES_DSN" python -m backend.api.app & sleep 2; kill %1 || true
   python -m cli.load_words --help | head -n 1
+
+  #+end_src
 - Review and commit:
+  #+begin_src shell
   git status
   git add -A
   git commit -m "refactor: move to backend/{api,core,indexing,storage} and cli/, update imports and entry points"
+  #+end_src
 
 Notes
 - After this, use:
-  - Backend: uvicorn backend.api.app:app --host 127.0.0.1 --port 8000
-  - CLI: python -m cli.load_words …, python -m cli.build_word_index …, python -m cli.train_tokenizer …
-- If any residual imports remain, run: git grep -n 'from tools\.' and fix similarly.
+  - Backend: ~uvicorn backend.api.app:app --host 127.0.0.1 --port 8000~
+  - CLI: ~python -m cli.load_words …, python -m cli.build_word_index …, python -m cli.train_tokenizer …~
+- If any residual imports remain, run: ~git grep -n 'from tools\.'~ and fix similarly.
+
+
+* Other files
+# Optional bulk commands (run in a shell at the repo root):
+#+begin_src shell
+  grep -RIl --exclude-dir=.git 'python webui1/app\.py' doc | xargs -r sed -i -E 's#python webui1/app\.py#uvicorn backend.api.app:app --host 127.0.0.1 --port 8000#g'
+  grep -RIl --exclude-dir=.git 'tools\.build_word_index' doc | xargs -r sed -i -E 's/tools\.build_word_index/cli.build_word_index/g'
+  grep -RIl --exclude-dir=.git 'tools\.load_words' doc | xargs -r sed -i -E 's/tools\.load_words/cli.load_words/g'
+  grep -RIl --exclude-dir=.git 'tools\.trie_word_indexer' doc | xargs -r sed -i -E 's/tools\.trie_word_indexer/backend.indexing.trie_word_indexer/g'
+  grep -RIl --exclude-dir=.git 'webui1/app\.py' doc | xargs -r sed -i -E 's#webui1/app\.py#backend/api/app.py#g'
+  grep -RIl --exclude-dir=.git 'tools/storage\.py' doc | xargs -r sed -i -E 's#tools/storage\.py#backend/storage/#g'
+#+end_src

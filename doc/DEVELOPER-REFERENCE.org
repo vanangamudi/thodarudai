@@ -19,7 +19,7 @@ This is a compact reference for the codebase structure, core modules, and conven
   - Curated index implementation in =tools/curation_index.py= (supports file-based and DB-backed curation)
 
 - Frontends
-  - Web backend in =webui1/app.py= and React frontend in =webui1/frontend=
+  - Web backend in =backend/api/app.py= and React frontend in =webui1/frontend=
   - Qt GUI in =tools/gui_qt_app.py=
 
 - Vendored trie
@@ -53,7 +53,7 @@ This is a compact reference for the codebase structure, core modules, and conven
 - Function length report:
   ~python -m tools.function_lengths tools/gui_qt_app.py --top 25~
 - Trie build performance evaluation:
-  ~python -m tools.trie_word_indexer --profile default --base_dir ./data --build --parallel --overwrite --pbar~
+  ~python -m backend.indexing.trie_word_indexer --profile default --base_dir ./data --build --parallel --overwrite --pbar~
 
 ** Conventions
 

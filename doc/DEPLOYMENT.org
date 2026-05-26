@@ -6,7 +6,7 @@
   - Seed:
     - ~python tools/load_words.py postgres --files <path>/word-index.tsv --db-chunk 50000~
   - Run backend on host:
-    - ~STORAGE_BACKEND=postgres POSTGRES_DSN="$POSTGRES_DSN" python webui1/app.py~
+    - ~STORAGE_BACKEND=postgres POSTGRES_DSN="$POSTGRES_DSN" uvicorn backend.api.app:app --host 127.0.0.1 --port 8000~
   - Stop DB:
     - ~bash docker/postgres/pg-down.sh~ (use PGCLEAN=1 to drop volume)
 

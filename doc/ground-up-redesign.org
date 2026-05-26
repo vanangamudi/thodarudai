@@ -15,7 +15,7 @@ System components
     - =/api/generate_batch_name= helper.
     - =/api/health= runtime info.
   - Future: auth endpoints (=/api/login=, =/api/logout=, =/api/me=).
-- Storage abstraction (=tools/storage.py=)
+- Storage abstraction (=backend/storage/=)
   - FileStorage (legacy batches, ledger, reminders).
   - SqliteStorage and PostgresStorage (canonical DB stores).
   - Uniform methods:
@@ -43,24 +43,24 @@ Quick usage (current state)
 
 - Build word index TSV
 #+begin_src sh
-python -m tools.build_word_index --profile default --base_dir ./data --out ./data/word-index.tsv
+python -m cli.build_word_index --profile default --base_dir ./data --out ./data/word-index.tsv
 #+end_src
 
 - Load words into SQLite (optional, DB mode)
 #+begin_src sh
-python -m tools.load_words sqlite --files ./data/word-index.tsv --db_path ./data/curation.db
+python -m cli.load_words sqlite --files ./data/word-index.tsv --db_path ./data/curation.db
 #+end_src
 
 - Start backend (filesystem mode)
 #+begin_src sh
-python webui1/app.py
+uvicorn backend.api.app:app --host 127.0.0.1 --port 8000
 # or
 uvicorn backend.api.app:app --host 127.0.0.1 --port 8000 --reload
 #+end_src
 
 - Start backend (SQLite mode)
 #+begin_src sh
-STORAGE_BACKEND=sqlite SQLITE_PATH=./data/curation.db python webui1/app.py
+STORAGE_BACKEND=sqlite SQLITE_PATH=./data/curation.db uvicorn backend.api.app:app --host 127.0.0.1 --port 8000
 #+end_src
 
 - Start frontend (Vite + React)
@@ -83,8 +83,8 @@ python tools/gui_qt_app.py --storage sqlite --sqlite_path ./data/curation.db --p
 
 - Trie indexer (optional; build and query)
 #+begin_src sh
-python -m tools.trie_word_indexer --build --profile default --base_dir ./data
-python -m tools.trie_word_indexer --profile default --base_dir ./data --query_prefix ka --limit 50
+python -m backend.indexing.trie_word_indexer --build --profile default --base_dir ./data
+python -m backend.indexing.trie_word_indexer --profile default --base_dir ./data --query_prefix ka --limit 50
 #+end_src
 
 Notes
@@ -335,7 +335,7 @@ Runbook (after migration)
   #+end_example
 - Seed words into DB (one-time if empty):
   #+begin_example
-  python -m tools.load_words sqlite --files data/word-index.tsv --db_path data/curation.db
+  python -m cli.load_words sqlite --files data/word-index.tsv --db_path data/curation.db
   #+end_example
 - Export dataset (global or scoped):
   #+begin_example

@@ -139,11 +139,11 @@ Implications:
     - Disabling per-write flush on the store during build for speed.
   - Example incremental passes:
     - Short words first:
-      - ~python -m tools.trie_word_indexer --build --profile default --base_dir <dir> --overwrite --max_glen 4 --pbar~
+      - ~python -m backend.indexing.trie_word_indexer --build --profile default --base_dir <dir> --overwrite --max_glen 4 --pbar~
     - Then 5–8:
-      - ~python -m tools.trie_word_indexer --build --profile default --base_dir <dir> --min_glen 5 --max_glen 8 --pbar~
+      - ~python -m backend.indexing.trie_word_indexer --build --profile default --base_dir <dir> --min_glen 5 --max_glen 8 --pbar~
     - Then 9+:
-      - ~python -m tools.trie_word_indexer --build --profile default --base_dir <dir> --min_glen 9 --pbar~
+      - ~python -m backend.indexing.trie_word_indexer --build --profile default --base_dir <dir> --min_glen 9 --pbar~
 
 ** Performance tips
 

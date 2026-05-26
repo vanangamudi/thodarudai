@@ -14,7 +14,7 @@ A dedicated script that loads a word index into persistent storage. It offers tw
 ** Overlap
 Much of the logic for reading the input files (and computing frequencies and glen) is similar to =build_word_index.py=. This redundancy suggests that common helper functions might be refactored into a shared module.
 
-* tools/storage.py
+* backend/storage/
 Defines a unified storage abstraction (the interface =StorageBase=) that is used to persist batches, ledger updates, reminders, and summary records.
 It provides two implementations:
  - =FileStorage= for file‑based storage (using TSV files).
@@ -67,7 +67,7 @@ A PyTorch‑based script to train a tokenizer (or sequence-to‑sequence model) 
  - Trains an encoder/decoder network and provides evaluation/inference functions
 This script is the main machine learning component that uses the curated and exported data to train a model.
 
-* webui1/app.py
+* backend/api/app.py
 Implements the FastAPI backend that serves API endpoints for the Web UI.
  - Provides endpoints for querying the word index (with filters and curated mixing), committing edits (which updates ledger files and curated index), and retrieving summaries and reminders.
  - Loads the word‑index via =tools/word_indexer.py= and the curated index via =tools/curation_index.py=.
@@ -93,6 +93,6 @@ Several scripts share overlapping functionality:
  - =tools/build_word_index.py= and =tools/load_words.py= both read word files, compute frequency and grapheme length information. Their common code (e.g. the =openfile()= function, word counting, =ari.length()= calls) can be refactored into a shared module.
  - Query processing and filtering functions in =tools/curation_core.py= are used by both the backend =app.py= and the Qt GUI. It may be beneficial to further centralize these utilities.
  - Both word indexers (=word_indexer.py= and =trie_word_indexer.py=) provide query capabilities. Although they serve different performance goals, their interfaces could be unified so that the rest of the system interacts with a common index API.
- - Storage operations across the backend and the GUI (accessing ledger, batch, and reminder files) always use the abstraction from =tools/storage.py=. Ensuring that other parts of the code delegate to that module will reduce duplication.
+ - Storage operations across the backend and the GUI (accessing ledger, batch, and reminder files) always use the abstraction from =backend/storage/=. Ensuring that other parts of the code delegate to that module will reduce duplication.
 
 Reviewing these overlaps will give an opportunity to consolidate common code into fewer modules and simplify future maintenance.

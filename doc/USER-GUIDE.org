@@ -12,13 +12,13 @@ This guide explains how to bootstrap data, run the UIs, and use the main feature
 ** Build or merge a word index
 
 - Merge TSVs that already have the header =word  freq  glen= into a single index:
-  ~python -m tools.build_word_index --profile default --base_dir ./data --out ./data/word-index.tsv~
+  ~python -m cli.build_word_index --profile default --base_dir ./data --out ./data/word-index.tsv~
 - If you already have a complete TSV, you may skip this step.
 
 ** Optional: load words into SQLite
 
 - Load your TSV into a SQLite database table named =words=:
-  ~python -m tools.load_words sqlite --files ./data/word-index.tsv --db_path ./data/curation.db~
+  ~python -m cli.load_words sqlite --files ./data/word-index.tsv --db_path ./data/curation.db~
 - SQLite settings used:
   - WAL mode, NORMAL synchronous, and a busy timeout for concurrent readers.
 
@@ -26,9 +26,9 @@ This guide explains how to bootstrap data, run the UIs, and use the main feature
 
 - Backend (FastAPI)
   - Filesystem mode:
-    ~python webui1/app.py~
+    ~uvicorn backend.api.app:app --host 127.0.0.1 --port 8000~
   - SQLite mode:
-    ~STORAGE_BACKEND=sqlite SQLITE_PATH=./data/curation.db python webui1/app.py~
+    ~STORAGE_BACKEND=sqlite SQLITE_PATH=./data/curation.db uvicorn backend.api.app:app --host 127.0.0.1 --port 8000~
 - Frontend (Vite + React):
   ~cd webui1/frontend && npm install && npm run dev~
 - Exposed endpoints include:
@@ -61,9 +61,9 @@ This guide explains how to bootstrap data, run the UIs, and use the main feature
 ** Optional: trie-based index build
 
 - Build forward and reverse tries from =word-index.tsv=:
-  ~python -m tools.trie_word_indexer --profile default --base_dir ./data --build --overwrite --pbar~
+  ~python -m backend.indexing.trie_word_indexer --profile default --base_dir ./data --build --overwrite --pbar~
 - Query test:
-  ~python -m tools.trie_word_indexer --profile default --base_dir ./data --query_prefix க --limit 20~
+  ~python -m backend.indexing.trie_word_indexer --profile default --base_dir ./data --query_prefix க --limit 20~
 
 ** Export dataset and train tokenizer
 

@@ -13,16 +13,16 @@ This document is the new entry point. Older documents are preserved and indexed 
 1) Build or prepare a word index TSV
 - The index is a TSV with header =word  freq  glen=
 - Merge precomputed TSVs:
-  ~python -m tools.build_word_index --profile default --base_dir ./data --out ./data/word-index.tsv~
+  ~python -m cli.build_word_index --profile default --base_dir ./data --out ./data/word-index.tsv~
 
 2) Optional: load to SQLite
-  ~python -m tools.load_words sqlite --files ./data/word-index.tsv --db_path ./data/curation.db~
+  ~python -m cli.load_words sqlite --files ./data/word-index.tsv --db_path ./data/curation.db~
 
 3) Run Web UI backend
 - Filesystem mode:
-  ~python webui1/app.py~
+  ~uvicorn backend.api.app:app --host 127.0.0.1 --port 8000~
 - SQLite mode:
-  ~STORAGE_BACKEND=sqlite SQLITE_PATH=./data/curation.db python webui1/app.py~
+  ~STORAGE_BACKEND=sqlite SQLITE_PATH=./data/curation.db uvicorn backend.api.app:app --host 127.0.0.1 --port 8000~
 
 4) Run frontend
   ~cd webui1/frontend && npm install && npm run dev~
@@ -34,7 +34,7 @@ This document is the new entry point. Older documents are preserved and indexed 
   ~python tools/gui_qt_app.py --storage sqlite --sqlite_path ./data/curation.db --profile default --base_dir ./data~
 
 6) Optional: build tries for fast prefix and suffix
-  ~python -m tools.trie_word_indexer --profile default --base_dir ./data --build --overwrite --pbar~
+  ~python -m backend.indexing.trie_word_indexer --profile default --base_dir ./data --build --overwrite --pbar~
 
 ** Data layout per profile
 
@@ -50,9 +50,9 @@ Under =<base_dir>/<profile>/=:
 ** Common commands
 
 - Build index TSV:
-  ~python -m tools.build_word_index --profile default --base_dir ./data --out ./data/word-index.tsv~
+  ~python -m cli.build_word_index --profile default --base_dir ./data --out ./data/word-index.tsv~
 - Load words into SQLite:
-  ~python -m tools.load_words sqlite --files ./data/word-index.tsv --db_path ./data/curation.db~
+  ~python -m cli.load_words sqlite --files ./data/word-index.tsv --db_path ./data/curation.db~
 - Export dataset:
   ~python -m tools.export_dataset --profile default --base_dir ./data --out ./data/tokenizer-YYYYMMDDTHHMMSS.tsv~
 - Train tokenizer:

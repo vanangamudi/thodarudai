@@ -494,7 +494,7 @@ Issues:
   - Dead code after ~sys.exit(app.exec_())~: duplicate method defs with incorrect pulli; unreachable and should be removed.
 - =tools/build_word_index.py=
   - Default =paths=[default_profile.wordlist_path]= when none are provided likely does the wrong thing for a builder (reads an output file as input).
-  - Usage string refers to =tools.build_wordlist= instead of =tools.build_word_index= (stale).
+  - Usage string refers to =tools.build_wordlist= instead of =cli.build_word_index= (stale).
 - =tools/gui_qt_app.py=
   - Duplicate method definitions: =PhoneticLineEdit.commit_composition()= and =MainWindow.populate_table_from_results()= are defined twice.
 - =tamilphonetic/core.py= vs =tools/tamil_phonetic.py=

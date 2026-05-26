@@ -125,9 +125,9 @@ This document summarizes all major changes and additions over the last three day
 
 ** Quick commands recap
 - Build word index:
-  - ~python -m tools.build_word_index input1.tsv [input2.tsv ...] > <base_dir>/<profile>/word-index.tsv~
+  - ~python -m cli.build_word_index input1.tsv [input2.tsv ...] > <base_dir>/<profile>/word-index.tsv~
 - Build tries (with progress bar):
-  - ~python -m tools.trie_word_indexer --profile default --base_dir <dir> --build --overwrite --pbar~
+  - ~python -m backend.indexing.trie_word_indexer --profile default --base_dir <dir> --build --overwrite --pbar~
 - Launch GUI (trie indexer):
   - ~python -m tools.gui_qt_app --profile default --base_dir <dir> --indexer trie~
 - Export dataset:
